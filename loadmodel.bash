@@ -156,35 +156,41 @@ resolve_model() {
     local repo="${spec%%:*}"
     local tag="${spec#*:}"
 
-    # Determine filename
+    # Determine filename candidates
     local repo_base="${repo##*/}"
     local upper_tag="$(echo "$tag" | tr '[:lower:]' '[:upper:]')"
-    local file=""
+    local candidates=()
     if [[ "$tag" == *.gguf ]]; then
-        file="$tag"
+        candidates+=("$tag")
     else
-        file="${repo_base}-${upper_tag}.gguf"
+        candidates+=("${repo_base}-${upper_tag}.gguf" "${repo_base}.${upper_tag}.gguf" "${upper_tag}.gguf")
     fi
 
-    local url="https://huggingface.co/${repo}/resolve/main/${file}"
-    local local_path="${MODELS_DIR}/${file}"
-
     mkdir -p "$MODELS_DIR"
-    if [[ ! -f "$local_path" ]]; then
-        print_color "$BLUE" "Downloading $url"
+    local file url local_path
+    for file in "${candidates[@]}"; do
+        url="https://huggingface.co/${repo}/resolve/main/${file}"
+        local_path="${MODELS_DIR}/${file}"
+        if [[ -f "$local_path" ]]; then
+            print_color "$GREEN" "Using cached model $local_path"
+            echo "$local_path"
+            return 0
+        fi
+        print_color "$BLUE" "Attempting $url"
         local curl_args=(-L -f -o "$local_path")
         if [[ -n "${HF_TOKEN:-}" ]]; then
             curl_args+=( -H "Authorization: Bearer $HF_TOKEN" )
         fi
-        if ! curl "${curl_args[@]}" "$url"; then
-            print_color "$RED" "Failed to download model from $url"
-            exit 1
+        if curl "${curl_args[@]}" "$url"; then
+            echo "$local_path"
+            return 0
+        else
+            rm -f "$local_path"
         fi
-    else
-        print_color "$GREEN" "Using cached model $local_path"
-    fi
+    done
 
-    echo "$local_path"
+    print_color "$RED" "Failed to download model from Hugging Face repository"
+    exit 1
 }
 
 # Get GPU information
