@@ -12,6 +12,9 @@ DEFAULT_CONTEXT_SIZE="2048"
 DEFAULT_THREADS=$(nproc)
 DEFAULT_GPU_LAYERS="999"  # Auto-detect max layers
 
+# Directory of this script and local bin with symlinked binaries
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -71,6 +74,8 @@ check_llama_cpp() {
 
     # Check multiple possible locations
     local possible_paths=(
+        "$SCRIPT_DIR/bin/llama-server"
+        "$SCRIPT_DIR/llama-cpp-latest/build/bin/llama-server"
         "$HOME/llama-current/build/bin/llama-server"
         "$HOME/llama-current/llama-server"
         "./llama-server"
