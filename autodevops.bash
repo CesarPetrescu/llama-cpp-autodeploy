@@ -61,7 +61,7 @@ check_dependencies() {
         print_color "$RED" "Missing dependencies: ${missing_deps[*]}"
         print_color "$YELLOW" "Installing missing dependencies..."
         sudo apt update
-        sudo apt install -y build-essential cmake git curl jq
+        sudo apt install -y build-essential cmake git curl jq nvidia-cuda-toolkit libmkl-dev
         log "Dependencies installed"
     fi
 
@@ -168,6 +168,8 @@ build_llama_cpp() {
     cmake .. \
         -DGGML_CUDA=ON \
         -DCMAKE_CUDA_ARCHITECTURES="$compute_arch" \
+        -DLLAMA_BLAS=ON \
+        -DLLAMA_BLAS_VENDOR=Intel10_64lp \
         -DCMAKE_BUILD_TYPE=Release \
         -DGGML_CUDA_FORCE_MMQ=OFF \
         -DGGML_CUDA_F16=ON \
