@@ -26,6 +26,8 @@ sudo apt install build-essential cmake git curl jq nvidia-cuda-toolkit
 
 # 4. Run initial build
 ./autodevops.bash --now
+# 5. Use binaries from ./bin (created automatically)
+ls -l bin
 ```
 
 ## 📋 System Components
@@ -57,10 +59,11 @@ sudo apt install build-essential cmake git curl jq nvidia-cuda-toolkit
 6. Optimizes build for your specific GPU
 7. Creates symlink to current build
 8. Updates version tracking
+9. Links latest binaries into `./bin`
 
 ### 2. `loadmodel.bash` - Model Server Launcher
 
-**Purpose**: Provides a unified interface for starting llama-server in different modes.
+**Purpose**: Provides a unified interface for starting llama-server in different modes. The script automatically uses the binaries in `./bin` created by `autodevops.bash`.
 
 **Usage Examples**:
 ```bash
@@ -112,6 +115,9 @@ $HOME/
 │   └── llama-cpp-b5748/
 ├── llama-current/               # Symlink to current build
 │   └── build/bin/llama-server   # Current server binary
+├── llama-cpp-autodeploy/
+│   ├── bin/                     # Symlinks to latest binaries
+│   └── llama-cpp-latest -> ../llama-builds/llama-cpp-bXXXX/
 ├── .llama-version              # Current version tracking
 ├── autodevops.log              # Main operation log
 └── autodevops-cron.log         # Cron execution log
@@ -178,7 +184,7 @@ tail -f $HOME/autodevops.log
 cat $HOME/.llama-version
 
 # Test current build
-$HOME/llama-current/build/bin/llama-server --help
+./bin/llama-server --help
 ```
 
 ## 🚨 Troubleshooting

@@ -14,6 +14,10 @@ CURRENT_DIR="$HOME/llama-current"
 LOG_FILE="$HOME/autodevops.log"
 VERSION_FILE="$HOME/.llama-version"
 
+# Directory of this script and local bin for symlinks
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_BIN="$SCRIPT_DIR/bin"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -183,6 +187,16 @@ build_llama_cpp() {
 
     ln -sf "$build_path" "$CURRENT_DIR"
     log "Updated current build symlink"
+
+    # Update local symlinks in repository
+    mkdir -p "$LOCAL_BIN"
+    ln -sfn "$build_path" "$SCRIPT_DIR/llama-cpp-latest"
+    for f in "$build_path"/build/bin/*; do
+        if [[ -f "$f" ]]; then
+            ln -sfn "$f" "$LOCAL_BIN/$(basename "$f")"
+        fi
+    done
+    log "Updated local repository bin symlinks"
 
     # Update version file
     echo "$version" > "$VERSION_FILE"
