@@ -5,3 +5,4 @@ huggingface-hub
 torch
 transformers
 sentencepiece
+vllm

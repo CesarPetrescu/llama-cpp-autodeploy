@@ -20,7 +20,7 @@ This project provides Python scripts to automatically build [llama.cpp](https://
 
 ### Installation
 ```bash
-# install Python dependencies
+# install Python dependencies (includes vLLM for reranking)
 pip install -r requirements.txt
 
 # run the first build immediately (includes reranking support)
@@ -49,17 +49,15 @@ python loadmodel.py ./models/bge-embedding-model.gguf --embed --local
 
 #### 3. Reranking Models
 ```bash
+
 # start reranking server (GGUF models)
 python loadmodel.py gpustack/bge-reranker-v2-m3-GGUF:Q8_0 --rerank
 
-# start Qwen3 reranker server via Transformers
-python loadmodel.py QuantFactory/Qwen3-Reranker-4B-GGUF --rerank
+# start Qwen3 reranker server via vLLM
+python loadmodel.py Qwen/Qwen3-Reranker-4B --rerank
 
-# run Qwen3 reranker locally using Transformers
-python reranker.py QuantFactory/Qwen3-Reranker-4B-GGUF \
-    "What is machine learning?" \
-    "ML is an AI subset" \
-    "Deep learning uses neural nets"
+# run Qwen3 reranker manually with vLLM
+python vllm.py Qwen/Qwen3-Reranker-4B --host 0.0.0.0 --port 8000
 
 # local reranker model
 python loadmodel.py ./models/bge-reranker-v2-m3-Q8_0.gguf --rerank --local

@@ -116,9 +116,9 @@ def main():
         mode = "rerank"
 
     if mode == "rerank":
-        script = SCRIPT_DIR / "reranker.py"
-        cmd = [str(script), args.model, "--serve", "--host", args.host, "--port", str(args.port)]
-        print("Starting reranker server:\n", shlex.join([sys.executable] + cmd))
+        script = SCRIPT_DIR / "vllm.py"
+        cmd = [str(script), args.model, "--host", args.host, "--port", str(args.port)]
+        print("Starting vLLM server:\n", shlex.join([sys.executable] + cmd))
         os.execv(sys.executable, [sys.executable] + cmd)
         return
 
