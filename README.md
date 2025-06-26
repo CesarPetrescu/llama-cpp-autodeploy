@@ -13,6 +13,7 @@ A comprehensive automation system for building, deploying, and managing llama.cp
 5. **Intel oneMKL** installed for CPU acceleration
 6. **CUDA toolkit** installed (e.g., `nvidia-cuda-toolkit`)
 
+
 ### Installation
 
 ```bash
@@ -21,8 +22,9 @@ chmod +x autodevops.bash loadmodel.bash setup-cron.bash
 
 # 2. Install system dependencies (automatically handled by scripts)
 sudo apt update
-sudo apt install build-essential cmake git curl jq libmkl-dev
-# Install CUDA toolkit separately if not already installed
+
+sudo apt install build-essential cmake git curl jq nvidia-cuda-toolkit libmkl-dev
+
 
 # 3. Setup automated builds
 ./setup-cron.bash install
