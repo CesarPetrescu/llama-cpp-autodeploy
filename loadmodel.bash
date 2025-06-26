@@ -1,7 +1,9 @@
 #!/bin/bash
 
 # loadmodel.bash - llama-server startup script with multiple modes
-# Usage: ./loadmodel.bash --model "path/to/model.gguf" --embedding|--rerank|--llm [additional options]
+# Usage:
+#   ./loadmodel.bash <repo:tag|path> [--embedding|--rerank|--llm] [options]
+#   ./loadmodel.bash --model <repo:tag|path> [--embedding|--rerank|--llm] [options]
 
 set -euo pipefail
 
@@ -14,6 +16,21 @@ DEFAULT_GPU_LAYERS="999"  # Auto-detect max layers
 
 # Directory of this script and local bin with symlinked binaries
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Directory where remote models will be stored
+MODELS_DIR="$SCRIPT_DIR/models"
+
+# Load environment variables from .env or .env.local
+load_env() {
+    if [[ -f "$SCRIPT_DIR/.env" ]]; then
+        set -a
+        source "$SCRIPT_DIR/.env"
+        set +a
+    elif [[ -f "$SCRIPT_DIR/.env.local" ]]; then
+        set -a
+        source "$SCRIPT_DIR/.env.local"
+        set +a
+    fi
+}
 
 # Colors for output
 RED='\033[0;31m'
@@ -32,10 +49,14 @@ print_color() {
 # Usage function
 usage() {
     cat << EOF
-Usage: $0 --model "path/to/model.gguf" --embedding|--rerank|--llm [options]
+Usage: $0 <model> [--embedding|--rerank|--llm] [options]
 
-Required arguments:
-  --model PATH          Path to the GGUF model file
+  <model> can be either a local .gguf file or a remote specification
+  in the form "user/repo:quantization" (optionally prefixed with "hf.co/").
+  When a remote spec is used the model is automatically downloaded to
+  "$MODELS_DIR".
+
+Legacy syntax using --model <path> is still supported.
 
 Mode selection (choose one):
   --embedding           Run in embedding mode
@@ -49,21 +70,22 @@ Optional arguments:
   --threads NUM        Number of threads (default: $DEFAULT_THREADS)
   --gpu-layers NUM     GPU layers to offload (default: $DEFAULT_GPU_LAYERS)
   --pooling TYPE       Pooling type for embeddings (mean|cls|last|rank)
+  --local             Treat <model> as a local file even if it does not exist
   --verbose            Enable verbose output
   --help               Show this help message
 
 Examples:
-  # Run LLM server
-  $0 --model "./models/llama-7b.gguf" --llm
+  # Download and run a quantized model
+  $0 bartowski/Llama-3.2-3B-Instruct-GGUF:Q8_0 --llm
 
-  # Run embedding server
-  $0 --model "./models/bge-large-en.gguf" --embedding --pooling mean
+  # Use a local embedding model
+  $0 ./models/bge-large-en.gguf --embedding --pooling mean --local
 
-  # Run rerank server
-  $0 --model "./models/bge-reranker.gguf" --rerank
+  # Use a local reranker
+  $0 ./models/bge-reranker.gguf --rerank --local
 
   # Custom port and context size
-  $0 --model "./models/model.gguf" --llm --port 8081 --ctx-size 4096
+  $0 ./models/model.gguf --llm --port 8081 --ctx-size 4096 --local
 
 EOF
 }
@@ -114,6 +136,55 @@ validate_model() {
     fi
 
     print_color "$GREEN" "Model file validated: $model_path"
+}
+
+# Resolve a model specification and return a local file path.
+# If the specification is a local file it is returned directly.
+# Remote specs follow the form "user/repo:tag" or "hf.co/user/repo:tag".
+resolve_model() {
+    local spec="$1"
+
+    # If the file exists locally, return it
+    if [[ -f "$spec" ]]; then
+        echo "$spec"
+        return 0
+    fi
+
+    # Remove optional hf.co/ prefix
+    spec="${spec#hf.co/}"
+
+    local repo="${spec%%:*}"
+    local tag="${spec#*:}"
+
+    # Determine filename
+    local repo_base="${repo##*/}"
+    local upper_tag="$(echo "$tag" | tr '[:lower:]' '[:upper:]')"
+    local file=""
+    if [[ "$tag" == *.gguf ]]; then
+        file="$tag"
+    else
+        file="${repo_base}-${upper_tag}.gguf"
+    fi
+
+    local url="https://huggingface.co/${repo}/resolve/main/${file}"
+    local local_path="${MODELS_DIR}/${file}"
+
+    mkdir -p "$MODELS_DIR"
+    if [[ ! -f "$local_path" ]]; then
+        print_color "$BLUE" "Downloading $url"
+        local curl_args=(-L -f -o "$local_path")
+        if [[ -n "${HF_TOKEN:-}" ]]; then
+            curl_args+=( -H "Authorization: Bearer $HF_TOKEN" )
+        fi
+        if ! curl "${curl_args[@]}" "$url"; then
+            print_color "$RED" "Failed to download model from $url"
+            exit 1
+        fi
+    else
+        print_color "$GREEN" "Using cached model $local_path"
+    fi
+
+    echo "$local_path"
 }
 
 # Get GPU information
@@ -189,8 +260,13 @@ build_command() {
 
 # Main function
 main() {
+    # Load environment variables if available
+    load_env
+
     # Parse command line arguments
+    local model_spec=""
     local model_path=""
+    local local_flag=false
     local mode="llm"  # default mode
     local host="$DEFAULT_HOST"
     local port="$DEFAULT_PORT"
@@ -203,8 +279,12 @@ main() {
     while [[ $# -gt 0 ]]; do
         case $1 in
             --model)
-                model_path="$2"
+                model_spec="$2"
                 shift 2
+                ;;
+            --local)
+                local_flag=true
+                shift
                 ;;
             --embedding)
                 mode="embedding"
@@ -251,18 +331,30 @@ main() {
                 exit 0
                 ;;
             *)
-                print_color "$RED" "Unknown option: $1"
-                usage
-                exit 1
+                if [[ -z "$model_spec" && "$1" != -* ]]; then
+                    model_spec="$1"
+                    shift
+                else
+                    print_color "$RED" "Unknown option: $1"
+                    usage
+                    exit 1
+                fi
                 ;;
         esac
     done
 
     # Validate required arguments
-    if [[ -z "$model_path" ]]; then
-        print_color "$RED" "ERROR: --model argument is required"
+    if [[ -z "$model_spec" ]]; then
+        print_color "$RED" "ERROR: model specification is required"
         usage
         exit 1
+    fi
+
+    # Resolve model
+    if [[ "$local_flag" == true ]]; then
+        model_path="$model_spec"
+    else
+        model_path=$(resolve_model "$model_spec")
     fi
 
     # Check system
