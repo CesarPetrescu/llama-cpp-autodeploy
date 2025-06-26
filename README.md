@@ -20,7 +20,7 @@ This project provides Python scripts to automatically build [llama.cpp](https://
 
 ### Installation
 ```bash
-# install Python dependencies
+# install Python dependencies (includes Transformers for reranking)
 pip install -r requirements.txt
 
 # run the first build immediately (includes reranking support)
@@ -49,8 +49,12 @@ python loadmodel.py ./models/bge-embedding-model.gguf --embed --local
 
 #### 3. Reranking Models
 ```bash
-# start reranking server
+
+# start reranking server (GGUF models)
 python loadmodel.py gpustack/bge-reranker-v2-m3-GGUF:Q8_0 --rerank
+
+# start Qwen3 reranker server
+python loadmodel.py Qwen/Qwen3-Reranker-4B --rerank
 
 # local reranker model
 python loadmodel.py ./models/bge-reranker-v2-m3-Q8_0.gguf --rerank --local
