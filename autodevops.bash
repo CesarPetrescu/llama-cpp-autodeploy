@@ -14,6 +14,9 @@ CURRENT_DIR="$HOME/llama-current"
 LOG_FILE="$HOME/autodevops.log"
 VERSION_FILE="$HOME/.llama-version"
 
+# Absolute path to directory containing this script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -198,8 +201,8 @@ schedule_build() {
     local temp_script="/tmp/llama_build_$version.sh"
     cat > "$temp_script" << EOF
 #!/bin/bash
-cd "\$(dirname "\$0")"
-$0 --now
+cd "$SCRIPT_DIR"
+"$SCRIPT_DIR/autodevops.bash" --now
 EOF
     chmod +x "$temp_script"
 
