@@ -16,26 +16,21 @@
 - **API**: OpenAI-compatible embeddings with mean pooling
 - **GPU**: Dual RTX 4090 with CUDA acceleration
 
-### ✅ 3. Qwen3 Reranker Service (NEW!)
-- **Embedding Model**: `qwen3-reranker-4b-q8_0.gguf` (4.0GB)
-- **Embedding Port**: 8084
-- **Reranking Port**: 8085
+### ✅ 3. Qwen3 Reranker
+- **Model**: `qwen3-reranker-4b-q8_0.gguf` (4.0GB)
+- **Port**: 8082
 - **Status**: ✅ Working
-- **API**: Custom reranking service using embeddings + cosine similarity
+- **API**: Built-in rerank endpoint of llama.cpp
 - **GPU**: Dual RTX 4090 with CUDA acceleration
 
-**Start Commands**:
+**Start Command**:
 ```bash
-# Start embedding server for reranker model
-python loadmodel.py --host 0.0.0.0 --port 8084 --embedding --pooling mean models/qwen3-reranker-4b-q8_0.gguf
-
-# Start reranking service (requires embedding server)
-python rerank_service.py --port 8085 --host 0.0.0.0
+python loadmodel.py --host 0.0.0.0 --port 8082 --rerank models/qwen3-reranker-4b-q8_0.gguf
 ```
 
 **Test Command**:
 ```bash
-curl -X POST http://localhost:8085/v1/rerank \
+curl -X POST http://localhost:8082/v1/rerank \
   -H "Content-Type: application/json" \
   -d '{
     "query": "A man is eating pasta.",

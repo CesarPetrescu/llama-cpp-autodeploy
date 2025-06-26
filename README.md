@@ -30,6 +30,21 @@ python loadmodel.py ./models/llama-7b.gguf --llm --local
 
 Set `HF_TOKEN` in `.env.local` if you need to access private models. Downloading uses `huggingface-cli` and models are stored in the `models/` directory.
 
+
+### Reranking
+llama.cpp can rank documents relative to a query when started with the `--rerank` flag. Ensure the binary is compiled with rerank support (`-DLLAMA_SERVER_RERANK=ON`).
+
+Start a reranker model:
+```bash
+python loadmodel.py --host 0.0.0.0 --port 8082 --rerank models/bge-reranker-v2-m3-q8_0.gguf
+```
+
+Query the reranker:
+```bash
+curl -X POST http://localhost:8082/v1/rerank \
+  -H "Content-Type: application/json" \
+  -d '{"query": "A man is eating pasta.", "documents": ["A man is eating food.", "The girl is carrying a baby."]}'
+```
 ### Updating
 Running `python autodevops.py` without `--now` checks for new releases hourly and schedules a build at 2 AM when a new version is found. Binaries are linked into the `bin/` directory.
 
