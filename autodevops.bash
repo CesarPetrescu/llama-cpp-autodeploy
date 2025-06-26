@@ -6,6 +6,10 @@
 
 set -euo pipefail
 
+# Directory of this script and local bin for symlinks
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_BIN="$SCRIPT_DIR/bin"
+
 # Configuration
 REPO_URL="https://github.com/ggml-org/llama.cpp"
 API_URL="https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
@@ -13,10 +17,6 @@ BUILD_DIR="$SCRIPT_DIR/llama-builds"
 CURRENT_DIR="$SCRIPT_DIR/llama-current"
 LOG_FILE="$SCRIPT_DIR/autodevops.log"
 VERSION_FILE="$SCRIPT_DIR/.llama-version"
-
-# Directory of this script and local bin for symlinks
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCAL_BIN="$SCRIPT_DIR/bin"
 
 # Colors for output
 RED='\033[0;31m'
