@@ -98,6 +98,7 @@ def build_llama(version: str):
         "-DGGML_CUDA_FORCE_MMQ=OFF",
         "-DGGML_CUDA_F16=ON",
         "-DLLAMA_CURL=ON",
+        "-DLLAMA_SERVER_RERANK=ON",
     ]
     run(cmake_cmd, cwd=build_path / "build")
     run(["make", f"-j{os.cpu_count()}"], cwd=build_path / "build")
