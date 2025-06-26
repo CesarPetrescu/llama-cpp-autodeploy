@@ -61,7 +61,7 @@ check_dependencies() {
         print_color "$RED" "Missing dependencies: ${missing_deps[*]}"
         print_color "$YELLOW" "Installing missing dependencies..."
         sudo apt update
-        sudo apt install -y build-essential cmake git curl jq nvidia-cuda-toolkit libmkl-dev
+        sudo apt install -y build-essential cmake git curl jq libmkl-dev
         log "Dependencies installed"
     fi
 
