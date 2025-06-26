@@ -49,8 +49,17 @@ python loadmodel.py ./models/bge-embedding-model.gguf --embed --local
 
 #### 3. Reranking Models
 ```bash
-# start reranking server
+# start reranking server (GGUF models)
 python loadmodel.py gpustack/bge-reranker-v2-m3-GGUF:Q8_0 --rerank
+
+# start Qwen3 reranker server via Transformers
+python loadmodel.py QuantFactory/Qwen3-Reranker-4B-GGUF --rerank
+
+# run Qwen3 reranker locally using Transformers
+python reranker.py QuantFactory/Qwen3-Reranker-4B-GGUF \
+    "What is machine learning?" \
+    "ML is an AI subset" \
+    "Deep learning uses neural nets"
 
 # local reranker model
 python loadmodel.py ./models/bge-reranker-v2-m3-Q8_0.gguf --rerank --local

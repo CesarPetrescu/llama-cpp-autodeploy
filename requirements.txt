@@ -2,3 +2,6 @@ requests
 python-dotenv
 colorama
 huggingface-hub
+torch
+transformers
+sentencepiece
