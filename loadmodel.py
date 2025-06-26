@@ -12,6 +12,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -113,6 +114,13 @@ def main():
         mode = "embedding"
     elif args.rerank:
         mode = "rerank"
+
+    if mode == "rerank":
+        script = SCRIPT_DIR / "reranker.py"
+        cmd = [str(script), args.model, "--serve", "--host", args.host, "--port", str(args.port)]
+        print("Starting reranker server:\n", shlex.join([sys.executable] + cmd))
+        os.execv(sys.executable, [sys.executable] + cmd)
+        return
 
     model_path = resolve_model(args.model, args.local)
     server = find_llama_server()
