@@ -1,6 +1,6 @@
 # llama.cpp Automated Build & Deployment System
 
-A comprehensive automation system for building, deploying, and managing llama.cpp with CUDA support on Debian systems. This system automatically checks for new releases, builds them with optimal CUDA configurations, and provides easy model loading capabilities.
+A comprehensive automation system for building, deploying, and managing llama.cpp with CUDA and Intel oneMKL support on Debian systems. This system automatically checks for new releases, builds them with optimal CUDA and CPU BLAS configurations, and provides easy model loading capabilities.
 
 ## 🚀 Quick Start
 
@@ -10,6 +10,7 @@ A comprehensive automation system for building, deploying, and managing llama.cp
 2. **NVIDIA GPU** with CUDA support
 3. **NVIDIA drivers** installed
 4. **Root/sudo access** for initial setup
+5. **Intel oneMKL** installed for CPU acceleration
 
 ### Installation
 
@@ -19,7 +20,7 @@ chmod +x autodevops.bash loadmodel.bash setup-cron.bash
 
 # 2. Install system dependencies (automatically handled by scripts)
 sudo apt update
-sudo apt install build-essential cmake git curl jq nvidia-cuda-toolkit
+sudo apt install build-essential cmake git curl jq nvidia-cuda-toolkit libmkl-dev
 
 # 3. Setup automated builds
 ./setup-cron.bash install
@@ -39,6 +40,7 @@ ls -l bin
 **Key Features**:
 - Fetches latest release from GitHub API
 - Compiles with optimized CUDA settings
+- Links against Intel oneMKL for CPU acceleration
 - Auto-detects GPU compute capability
 - Manages build versions and symlinks
 - Schedules builds for 2 AM when new versions are found
@@ -147,6 +149,7 @@ The system automatically:
 - Enables CUDA graphs and optimized kernels
 - Sets appropriate compute architectures
 - Maximizes GPU utilization
+- Links against Intel oneMKL for fast CPU operations
 
 ## 🔧 Configuration
 
@@ -163,6 +166,8 @@ export HF_TOKEN="your-hf-token"
 # Optional: CUDA paths (usually auto-detected)
 export CUDA_PATH="/usr/local/cuda"
 export CUDA_HOME="/usr/local/cuda"
+# Optional: MKL paths if not in default location
+# export MKLROOT="/opt/intel/oneapi/mkl/latest"
 ```
 
 Create a `.env.local` file with `HF_TOKEN` to authenticate when downloading
@@ -286,11 +291,17 @@ make -j$(nproc)
 
 ### Custom Build Options
 
+By default the automation script builds with NVIDIA CUDA and Intel oneMKL. If
+you need to tweak the build configuration manually, use options similar to the
+following:
+
 Modify `autodevops.bash` to add custom CMake options:
 ```bash
 cmake .. \
     -DGGML_CUDA=ON \
     -DCMAKE_CUDA_ARCHITECTURES="$compute_arch" \
+    -DLLAMA_BLAS=ON \
+    -DLLAMA_BLAS_VENDOR=Intel10_64lp \
     -DCMAKE_BUILD_TYPE=Release \
     -DGGML_CUDA_FORCE_MMQ=OFF \
     -DGGML_CUDA_F16=ON \
