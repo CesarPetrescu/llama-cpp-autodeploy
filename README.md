@@ -11,6 +11,8 @@ A comprehensive automation system for building, deploying, and managing llama.cp
 3. **NVIDIA drivers** installed
 4. **Root/sudo access** for initial setup
 5. **Intel oneMKL** installed for CPU acceleration
+6. **CUDA toolkit** installed (e.g., `nvidia-cuda-toolkit`)
+
 
 ### Installation
 
@@ -20,7 +22,9 @@ chmod +x autodevops.bash loadmodel.bash setup-cron.bash
 
 # 2. Install system dependencies (automatically handled by scripts)
 sudo apt update
+
 sudo apt install build-essential cmake git curl jq nvidia-cuda-toolkit libmkl-dev
+
 
 # 3. Setup automated builds
 ./setup-cron.bash install
@@ -87,6 +91,11 @@ ls -l bin
 
 The launcher reads environment variables from `.env` or `.env.local` in this
 directory. Set `HF_TOKEN` in one of these files to download private models.
+
+To load a model from Hugging Face, pass the repository and tag in the form
+`user/repo:TAG` or `hf.co/user/repo:TAG`. The launcher will download the model
+into `./models/` if it is not already present. Use `--local` when pointing to a
+file on disk.
 
 **Available Options**:
 - `--model PATH`: Explicit model path or repo:tag (optional when first argument is used)
