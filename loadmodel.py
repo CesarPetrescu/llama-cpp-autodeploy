@@ -83,10 +83,12 @@ def build_args(model_path: Path, mode: str, host: str, port: int, ctx: int, thre
         if pooling:
             args += ["--pooling", pooling]
     elif mode == "rerank":
-        args.append("--rerank")
+        args.append("--reranking")
+        # For reranker models, use 'rank' pooling by default if not specified
+        pooling_type = pooling if pooling else "rank"
+        args += ["--pooling", pooling_type]
     if verbose:
         args.append("--verbose")
-    args += ["--log-format", "text", "--timeout", "600"]
     return args
 
 
