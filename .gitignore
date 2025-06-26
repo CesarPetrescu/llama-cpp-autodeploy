@@ -17,3 +17,5 @@ llama-cpp-latest
 !models/.gitignore
 !llama-builds/.gitignore
 !llama-current/.gitignore
+venv/
+.venv/
