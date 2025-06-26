@@ -1,6 +1,6 @@
 # llama.cpp Automated Build & Deployment System
 
-A comprehensive automation system for building, deploying, and managing llama.cpp with CUDA support on Debian systems. This system automatically checks for new releases, builds them with optimal CUDA configurations, and provides easy model loading capabilities.
+A comprehensive automation system for building, deploying, and managing llama.cpp with CUDA and Intel oneMKL support on Debian systems. This system automatically checks for new releases, builds them with optimal CUDA and CPU BLAS configurations, and provides easy model loading capabilities.
 
 ## 🚀 Quick Start
 
@@ -10,6 +10,7 @@ A comprehensive automation system for building, deploying, and managing llama.cp
 2. **NVIDIA GPU** with CUDA support
 3. **NVIDIA drivers** installed
 4. **Root/sudo access** for initial setup
+5. **Intel oneMKL** installed for CPU acceleration
 
 ### Installation
 
@@ -19,7 +20,7 @@ chmod +x autodevops.bash loadmodel.bash setup-cron.bash
 
 # 2. Install system dependencies (automatically handled by scripts)
 sudo apt update
-sudo apt install build-essential cmake git curl jq nvidia-cuda-toolkit
+sudo apt install build-essential cmake git curl jq nvidia-cuda-toolkit libmkl-dev
 
 # 3. Setup automated builds
 ./setup-cron.bash install
@@ -39,6 +40,7 @@ ls -l bin
 **Key Features**:
 - Fetches latest release from GitHub API
 - Compiles with optimized CUDA settings
+- Links against Intel oneMKL for CPU acceleration
 - Auto-detects GPU compute capability
 - Manages build versions and symlinks
 - Schedules builds for 2 AM when new versions are found
@@ -67,23 +69,29 @@ ls -l bin
 
 **Usage Examples**:
 ```bash
-# Start LLM server
-./loadmodel.bash --model "./models/llama-7b.gguf" --llm
+# Start LLM server from a local file
+./loadmodel.bash ./models/llama-7b.gguf --llm --local
 
-# Start embedding server with pooling
-./loadmodel.bash --model "./models/bge-large-en.gguf" --embedding --pooling mean
+# Start LLM server by downloading a quantized model
+./loadmodel.bash bartowski/Llama-3.2-3B-Instruct-GGUF:Q8_0 --llm
+
+# Start embedding server
+./loadmodel.bash ./models/bge-large-en.gguf --embedding --pooling mean --local
 
 # Start rerank server
-./loadmodel.bash --model "./models/bge-reranker.gguf" --rerank
+./loadmodel.bash ./models/bge-reranker.gguf --rerank --local
 
 # Custom configuration
-./loadmodel.bash --model "./models/model.gguf" --llm --port 8081 --ctx-size 4096 --gpu-layers 50
+./loadmodel.bash ./models/model.gguf --llm --port 8081 --ctx-size 4096 --gpu-layers 50 --local
 ```
 
+The launcher reads environment variables from `.env` or `.env.local` in this
+directory. Set `HF_TOKEN` in one of these files to download private models.
+
 **Available Options**:
-- `--model PATH`: Model file path (required)
+- `--model PATH`: Explicit model path or repo:tag (optional when first argument is used)
 - `--embedding`: Embedding mode
-- `--rerank`: Rerank mode  
+- `--rerank`: Rerank mode
 - `--llm`: Normal LLM mode (default)
 - `--host HOST`: Server host (default: 127.0.0.1)
 - `--port PORT`: Server port (default: 8080)
@@ -91,6 +99,7 @@ ls -l bin
 - `--threads NUM`: CPU threads (default: auto)
 - `--gpu-layers NUM`: GPU layers (default: 999 = auto)
 - `--pooling TYPE`: Pooling for embeddings (mean|cls|last|rank)
+- `--local`: Treat the model argument as a local file
 - `--verbose`: Enable verbose output
 
 ### 3. `setup-cron.bash` - Cron Management
@@ -109,15 +118,15 @@ ls -l bin
 
 ### Directory Structure
 ```
-$HOME/
+./
 ├── llama-builds/                 # All version builds
 │   ├── llama-cpp-b5747/         # Version-specific builds
 │   └── llama-cpp-b5748/
 ├── llama-current/               # Symlink to current build
 │   └── build/bin/llama-server   # Current server binary
-├── llama-cpp-autodeploy/
-│   ├── bin/                     # Symlinks to latest binaries
-│   └── llama-cpp-latest -> ../llama-builds/llama-cpp-bXXXX/
+├── bin/                         # Symlinks to latest binaries
+├── models/                      # Downloaded GGUF models
+├── llama-cpp-latest -> llama-builds/llama-cpp-bXXXX/
 ├── .llama-version              # Current version tracking
 ├── autodevops.log              # Main operation log
 └── autodevops-cron.log         # Cron execution log
@@ -140,6 +149,7 @@ The system automatically:
 - Enables CUDA graphs and optimized kernels
 - Sets appropriate compute architectures
 - Maximizes GPU utilization
+- Links against Intel oneMKL for fast CPU operations
 
 ## 🔧 Configuration
 
@@ -147,19 +157,28 @@ The system automatically:
 
 ```bash
 # Optional: Override default directories
-export LLAMA_BUILD_DIR="$HOME/custom-llama-builds"
-export LLAMA_CURRENT_DIR="$HOME/custom-llama-current"
+export LLAMA_BUILD_DIR="$PWD/llama-builds"
+export LLAMA_CURRENT_DIR="$PWD/llama-current"
+
+# Optional: Hugging Face token for private models
+export HF_TOKEN="your-hf-token"
 
 # Optional: CUDA paths (usually auto-detected)
 export CUDA_PATH="/usr/local/cuda"
 export CUDA_HOME="/usr/local/cuda"
+# Optional: MKL paths if not in default location
+# export MKLROOT="/opt/intel/oneapi/mkl/latest"
 ```
+
+Create a `.env.local` file with `HF_TOKEN` to authenticate when downloading
+private models. The `.env` file is ignored by git so you can keep sensitive
+tokens out of version control.
 
 ### Cron Schedule
 
 The default cron job runs every hour:
 ```cron
-0 * * * * cd "/path/to/scripts" && ./autodevops.bash >> $HOME/autodevops-cron.log 2>&1
+0 * * * * cd "/path/to/scripts" && ./autodevops.bash >> ./autodevops-cron.log 2>&1
 ```
 
 To modify the schedule, edit with `crontab -e` or use `setup-cron.bash remove` and manually add a custom schedule.
@@ -168,8 +187,8 @@ To modify the schedule, edit with `crontab -e` or use `setup-cron.bash remove` a
 
 ### Log Files
 
-- `$HOME/autodevops.log`: Main operation log with timestamps
-- `$HOME/autodevops-cron.log`: Cron job execution log
+- `./autodevops.log`: Main operation log with timestamps
+- `./autodevops-cron.log`: Cron job execution log
 
 ### Status Checking
 
@@ -178,10 +197,10 @@ To modify the schedule, edit with `crontab -e` or use `setup-cron.bash remove` a
 ./setup-cron.bash status
 
 # View recent logs
-tail -f $HOME/autodevops.log
+tail -f ./autodevops.log
 
 # Check current version
-cat $HOME/.llama-version
+cat ./.llama-version
 
 # Test current build
 ./bin/llama-server --help
@@ -272,11 +291,17 @@ make -j$(nproc)
 
 ### Custom Build Options
 
+By default the automation script builds with NVIDIA CUDA and Intel oneMKL. If
+you need to tweak the build configuration manually, use options similar to the
+following:
+
 Modify `autodevops.bash` to add custom CMake options:
 ```bash
 cmake .. \
     -DGGML_CUDA=ON \
     -DCMAKE_CUDA_ARCHITECTURES="$compute_arch" \
+    -DLLAMA_BLAS=ON \
+    -DLLAMA_BLAS_VENDOR=Intel10_64lp \
     -DCMAKE_BUILD_TYPE=Release \
     -DGGML_CUDA_FORCE_MMQ=OFF \
     -DGGML_CUDA_F16=ON \
@@ -290,11 +315,11 @@ Create wrapper scripts for different models:
 ```bash
 #!/bin/bash
 # llm-server.sh
-./loadmodel.bash --model "$HOME/models/llama-7b.gguf" --llm --port 8080
+./loadmodel.bash ./models/llama-7b.gguf --llm --port 8080 --local
 
 #!/bin/bash  
 # embed-server.sh
-./loadmodel.bash --model "$HOME/models/bge-large.gguf" --embedding --port 8081
+./loadmodel.bash ./models/bge-large.gguf --embedding --port 8081 --local
 ```
 
 ### Integration with External Tools

@@ -1,0 +1,19 @@
+# Ignore user-specific environment
+.env
+
+# Build artifacts and downloads
+bin/
+models/
+llama-builds/
+llama-current/
+llama-cpp-latest
+
+# Logs and version tracking
+*.log
+.llama-version
+
+# Allow keeping placeholder files
+!bin/.gitkeep
+!models/.gitignore
+!llama-builds/.gitignore
+!llama-current/.gitignore
