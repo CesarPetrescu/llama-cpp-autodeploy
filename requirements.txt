@@ -1,7 +1,15 @@
+# Torch CUDA 12.9 builds
+torch==2.8.0+cu129
+torchvision==0.23.0+cu129
+torchaudio==2.8.0+cu129
+
+# Your libs
 requests
 python-dotenv
 colorama
 huggingface-hub
-torch
 transformers
 sentencepiece
+hf-transfer
+accelerate
+bitsandbytes
