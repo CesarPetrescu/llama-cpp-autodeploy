@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -148,16 +149,35 @@ def resolve_gguf(spec: str, models_dir: Path, hf_token: Optional[str]) -> Path:
     return Path()
 
 def parse_max_memory_arg(s: Optional[str]) -> Optional[dict]:
+    """
+    Accepts:
+      - "22GiB,22GiB,cpu=128GiB"              -> {0: "22GiB", 1: "22GiB", "cpu": "128GiB"}
+      - "0=22GiB,1=22GiB,cpu=128GiB"          -> {0: "22GiB", 1: "22GiB", "cpu": "128GiB"}
+      - "cuda:0=22GiB,gpu:1=22GiB,cpu=128GiB" -> {0: "22GiB", 1: "22GiB", "cpu": "128GiB"}
+    """
     if not s:
         return None
-    mm = {}
+    mm: dict = {}
     idx = 0
     for part in (x.strip() for x in s.split(",") if x.strip()):
         if "=" in part:
             dev, mem = part.split("=", 1)
-            mm[dev.strip()] = mem.strip()
+            key = dev.strip().lower()
+            for prefix in ("cuda:", "gpu:"):
+                if key.startswith(prefix):
+                    key = key[len(prefix):]
+            if key.isdigit():
+                k = int(key)
+            elif key in ("cpu", "mps", "disk"):
+                k = key
+            else:
+                try:
+                    k = int(key)
+                except ValueError:
+                    k = key
+            mm[k] = mem.strip()
         else:
-            mm[f"cuda:{idx}"] = part
+            mm[idx] = part
             idx += 1
     return mm
 
@@ -208,12 +228,62 @@ def launch_llama_server(
     env = os.environ.copy()
     return subprocess.Popen(cmd, env=env)
 
+def _wait_for_listen(host: str, port: int, timeout: float = 60.0) -> bool:
+    import socket, time
+    connect_host = "127.0.0.1" if host == "0.0.0.0" else host
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        s = socket.socket()
+        s.settimeout(1.0)
+        try:
+            s.connect((connect_host, port))
+            s.close()
+            return True
+        except Exception:
+            time.sleep(0.5)
+    return False
+
+def launch_llama_server_with_backoff(
+    model_path: Path,
+    host: str,
+    port: int,
+    extra: List[str],
+    n_gpu_layers: Optional[int],
+    tensor_split: Optional[str],
+    ctx_size: Optional[int],
+) -> subprocess.Popen:
+    """Start llama.cpp. If it fails (e.g., CUDA OOM), retry with fewer GPU layers so the rest stays on CPU RAM."""
+    ngl_try = n_gpu_layers if (n_gpu_layers is not None and n_gpu_layers >= 0) else 999
+    attempt = 0
+    while True:
+        attempt += 1
+        info(f"[llama][try {attempt}] --n-gpu-layers={ngl_try}")
+        proc = launch_llama_server(model_path, host, port, extra, ngl_try, tensor_split, ctx_size)
+        if _wait_for_listen(host, port, timeout=90.0):
+            return proc
+        # process did not start listening; back off
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        if ngl_try <= 0:
+            die("llama-server failed to start even with CPU-only; giving up")
+        ngl_try = max(0, ngl_try // 2)
+        info(f"[llama][retry] lowering --n-gpu-layers to {ngl_try} (spill remainder to CPU)")
+
 # --------------------------- Transformers Reranker (Qwen) ---------------------------
 
 class TRHandler(BaseHTTPRequestHandler):
     tok = None
     mdl = None
-    device = "cuda"
+    # If device_map='auto', we keep inputs on CPU and let Accelerate handle device placement.
+    input_target_device: Optional[str] = None
+    on_cuda: bool = False
+
     max_len = 4096
     doc_batch = 64
     instruction = 'Given a web search query, retrieve relevant passages that answer the query'
@@ -246,32 +316,53 @@ class TRHandler(BaseHTTPRequestHandler):
     @classmethod
     def _build_inputs(cls, pairs: List[str]):
         tok = cls.tok
-        inputs = tok(pairs, padding=True, truncation=True, max_length=cls.max_len, return_tensors="pt")
+        # Dynamic padding reduces VRAM pressure
+        inputs = tok(pairs, padding="longest", truncation=True, max_length=cls.max_len, return_tensors="pt")
         return inputs
 
     @classmethod
     def _score_pairs(cls, pairs: List[str]) -> List[float]:
         import torch
-        mdl = cls.mdl
-        tok = cls.tok
-        dev = cls.device
-        yes_id, no_id = cls.yes_id, cls.no_id
-
         scores: List[float] = []
-        bs = max(1, int(cls.doc_batch))
-        for i in range(0, len(pairs), bs):
-            chunk = pairs[i:i+bs]
-            inputs = cls._build_inputs(chunk)
-            for k in inputs:
-                inputs[k] = inputs[k].to(dev) if hasattr(inputs[k], "to") else inputs[k]
-            with torch.no_grad():
-                out = mdl(**inputs)
-                logits = out.logits[:, -1, :]  # [B, V]
-                yes = logits[:, yes_id]
-                no  = logits[:,  no_id]
-                two = torch.stack([no, yes], dim=1)
-                prob_yes = torch.softmax(two, dim=1)[:, 1].float().cpu().tolist()
-                scores.extend([float(x) for x in prob_yes])
+        target_bs = max(1, int(cls.doc_batch))
+        i = 0
+        while i < len(pairs):
+            bs = min(target_bs, len(pairs) - i)
+            while True:
+                chunk = pairs[i:i+bs]
+                inputs = cls._build_inputs(chunk)
+                # Only move inputs if we are on a single device setup
+                if cls.input_target_device is not None:
+                    for k in inputs:
+                        if hasattr(inputs[k], "to"):
+                            inputs[k] = inputs[k].to(cls.input_target_device)
+                try:
+                    with torch.no_grad():
+                        out = cls.mdl(**inputs)
+                    logits = out.logits[:, -1, :]  # [B, V]
+                    yes = logits[:, cls.yes_id]
+                    no  = logits[:, cls.no_id]
+                    two = torch.stack([no, yes], dim=1)
+                    prob_yes = torch.softmax(two, dim=1)[:, 1].float().cpu().tolist()
+                    scores.extend([float(x) for x in prob_yes])
+                    i += bs
+                    break
+                except torch.cuda.OutOfMemoryError:
+                    if cls.on_cuda:
+                        torch.cuda.empty_cache()
+                    if bs == 1:
+                        raise
+                    bs = max(1, bs // 2)
+                except RuntimeError as e:
+                    # Some backends raise generic RuntimeError for OOM
+                    if "out of memory" in str(e).lower():
+                        if cls.on_cuda:
+                            torch.cuda.empty_cache()
+                        if bs == 1:
+                            raise
+                        bs = max(1, bs // 2)
+                    else:
+                        raise
         return scores
 
     @staticmethod
@@ -406,10 +497,15 @@ def serve_transformers_rerank(
             from transformers import BitsAndBytesConfig
             import bitsandbytes as bnb
             _ = bnb.nn.Linear8bitLt  # force-sanity check
+            mm = parse_max_memory_arg(max_memory)
+            cpu_spill = bool(mm and any((isinstance(k, str) and k == "cpu") for k in mm.keys()))
             model_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_8bit=(quant.lower() == "8bit"),
                 load_in_4bit=(quant.lower() == "4bit"),
+                llm_int8_enable_fp32_cpu_offload=(cpu_spill if quant.lower() == "8bit" else False),
             )
+            if mm:
+                model_kwargs["max_memory"] = mm  # allow Accelerate to place some weights on CPU
             model_kwargs["device_map"] = "auto"
             model_kwargs["torch_dtype"] = torch_dtype
         except Exception as e:
@@ -423,7 +519,8 @@ def serve_transformers_rerank(
         if device_map == "auto":
             model_kwargs["device_map"] = "auto"
             mm = parse_max_memory_arg(max_memory)
-            if mm: model_kwargs["max_memory"] = mm
+            if mm:
+                model_kwargs["max_memory"] = mm  # supports CPU spill in non-bnb mode as well
         elif device_map in ("cuda", "cpu"):
             model_kwargs["device_map"] = None
         else:
@@ -436,13 +533,22 @@ def serve_transformers_rerank(
         tok.pad_token = tok.eos_token
 
     mdl = AutoModelForCausalLM.from_pretrained(model_ref, **model_kwargs).eval()
-    if model_kwargs.get("device_map") in (None, False):
+
+    device_map_used = model_kwargs.get("device_map")
+    input_target_device: Optional[str]
+    if device_map_used in (None, False):
         mdl = mdl.to(device)
+        input_target_device = device
+    else:
+        # Let Accelerate handle device placement. Keep inputs on CPU.
+        input_target_device = None
 
     # Prepare handler statics
+    import torch as _torch
     TRHandler.tok = tok
     TRHandler.mdl = mdl
-    TRHandler.device = "cuda" if torch.cuda.is_available() else "cpu"
+    TRHandler.input_target_device = input_target_device
+    TRHandler.on_cuda = _torch.cuda.is_available()
     TRHandler.doc_batch = int(doc_batch)
     TRHandler.max_len = int(max_len)
     TRHandler.instruction = instruction or TRHandler.instruction
@@ -497,7 +603,7 @@ For --rerank (Transformers):
     p.add_argument("--quant", default="8bit", help="none|8bit|4bit")
     p.add_argument("--doc-batch", type=int, default=64)
     p.add_argument("--max-len", type=int, default=4096)
-    p.add_argument("--max-memory", default=None, help='Examples: "22GiB,22GiB" or "cuda:0=22GiB,cuda:1=22GiB"')
+    p.add_argument("--max-memory", default=None, help='Examples: "22GiB,22GiB,cpu=128GiB" or "0=22GiB,1=22GiB,cpu=128GiB"')
     p.add_argument("--trust-remote-code", action="store_true")
     p.add_argument("--instruction", default=None, help="Custom rerank instruction (default: web search)")
 
@@ -529,7 +635,7 @@ For --rerank (Transformers):
     if args.embed:
         extra = ["--embeddings"] + extra
 
-    proc = launch_llama_server(
+    proc = launch_llama_server_with_backoff(
         model_path=gguf_path,
         host=args.host,
         port=args.port,
@@ -542,7 +648,7 @@ For --rerank (Transformers):
         proc.wait()
     except KeyboardInterrupt:
         try:
-            proc.send_signal(subprocess.signal.SIGINT)
+            proc.send_signal(signal.SIGINT)
             proc.wait(timeout=5)
         except Exception:
             proc.kill()
