@@ -143,6 +143,33 @@ python loadmodel.py --rerank <HF model id>
 > `autodevops.py` will abort with installation hints. Leaving `--blas` at the default `auto`
 > builds without BLAS when neither runtime is detected.
 
+## AutodevOps CLI presets
+
+The `autodevops_cli.py` wizard autodetects your CPU/GPU capabilities and surfaces only the
+presets that make sense for the machine you are on. Each option includes inline help so you
+can press the arrow keys to highlight a field and understand what enabling it will do.
+
+- **Hardware-aware backends:** CUDA, ROCm, SYCL, Vulkan, or CPU-only builds with curated
+  CMake snippets pulled directly from the comprehensive compilation guide.
+- **CPU tuning profiles:** Intel AVX2/AVX-512, AMD Zen, ARM64, or portable builds complete
+  with the matching compiler flags.
+- **Runtime helpers:** Toggle Flash Attention reminders, unified memory guidance, and runtime
+  launch templates for balanced, high-memory, constrained, or multi-GPU systems.
+- **Quantisation advice:** Get reminders about which GGUF families (FP16, INT8, Q4_K_M) pair
+  best with your hardware budget.
+
+When you exit the wizard the planned build recipe is printed back to the terminal, including
+per-backend instructions and runtime suggestions. Builds are only kicked off automatically
+when **Build immediately** remains checked.
+
+### Running tests
+
+Unit tests cover the wizard configuration logic and helper recipes. Run them with:
+
+```bash
+python -m unittest discover -s tests
+```
+
 ### Multi-GPU example
 
 ```bash
