@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, json, logging, os, re, shutil, subprocess, sys
+import argparse, glob, json, logging, os, re, shutil, subprocess, sys
 from datetime import datetime
 from pathlib import Path
 from urllib.request import urlopen
@@ -124,12 +124,44 @@ def write_math_fix_header(build_dir: Path) -> Path:
     )
     return hdr
 
+def _lib_present(patterns: list[str]) -> bool:
+    return any(glob.glob(p) for p in patterns)
+
+
 def mkl_present() -> bool:
     candidates = [
         "/usr/lib/x86_64-linux-gnu/libmkl_rt.so",
+        "/usr/lib/x86_64-linux-gnu/libmkl_rt.so.*",
         "/opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_rt.so",
+        "/opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_rt.so.*",
     ]
-    return any(Path(p).exists() for p in candidates)
+    return _lib_present(candidates)
+
+
+def openblas_present() -> bool:
+    candidates = [
+        "/usr/lib/x86_64-linux-gnu/libopenblas.so",
+        "/usr/lib/x86_64-linux-gnu/libopenblas.so.*",
+        "/usr/lib/libopenblas.so",
+        "/usr/lib/libopenblas.so.*",
+    ]
+    return _lib_present(candidates)
+
+
+def blas_hint(vendor: str) -> str:
+    if vendor == "mkl":
+        return (
+            "Install Intel oneAPI MKL runtime first.\n"
+            "  • Debian/Ubuntu: sudo apt install -y intel-oneapi-mkl intel-oneapi-mkl-devel intel-oneapi-openmp\n"
+            "  • Arch/Manjaro: yay -S intel-oneapi-mkl"
+        )
+    if vendor == "openblas":
+        return (
+            "Install OpenBLAS development libraries.\n"
+            "  • Debian/Ubuntu: sudo apt install -y libopenblas-dev\n"
+            "  • Arch/Manjaro: sudo pacman -S --needed openblas"
+        )
+    return ""
 
 def clone_llama(version: str, build_path: Path):
     if build_path.exists():
@@ -170,10 +202,22 @@ def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str):
     # BLAS selection
     if blas_mode == "off":
         ggml_blas = "OFF"; blas_vendor = "Generic"
-    elif blas_mode == "mkl" or (blas_mode == "auto" and mkl_present()):
+    elif blas_mode == "mkl":
+        if not mkl_present():
+            raise SystemExit("Intel oneAPI MKL not detected on this system.\n" + blas_hint("mkl"))
         ggml_blas = "ON";  blas_vendor = "Intel10_64lp"
+    elif blas_mode == "openblas":
+        if not openblas_present():
+            raise SystemExit("OpenBLAS not detected on this system.\n" + blas_hint("openblas"))
+        ggml_blas = "ON";  blas_vendor = "OpenBLAS"
     else:
-        ggml_blas = "ON";  blas_vendor = os.environ.get("GGML_BLAS_VENDOR","OpenBLAS")
+        if mkl_present():
+            ggml_blas = "ON";  blas_vendor = "Intel10_64lp"
+        elif openblas_present():
+            ggml_blas = "ON";  blas_vendor = "OpenBLAS"
+        else:
+            log("No MKL or OpenBLAS libraries detected; building without BLAS acceleration.")
+            ggml_blas = "OFF"; blas_vendor = "Generic"
 
     # CUDA flags
     cuda_flags = os.environ.get("CMAKE_CUDA_FLAGS","")

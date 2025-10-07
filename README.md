@@ -26,8 +26,11 @@ package manager commands below.
 - Debian/Ubuntu **or** Arch/Manjaro with NVIDIA driver and CUDA Toolkit (12.8+ recommended)
 - Build tools: `git`, `cmake`, `make`, `gcc`, `g++`, `pkg-config`
 - Python 3.8+
-- [Intel oneAPI MKL](https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html)
-  (optional but recommended for fastest CPU BLAS)
+
+- BLAS runtime for CPU acceleration (optional but recommended)
+  - [Intel oneAPI MKL](https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html)
+  - or [OpenBLAS](https://www.openblas.net/)
+
 - PyTorch CUDA 12.9 wheels are served from the official PyTorch index and the provided
   `requirements.txt` already sets `--extra-index-url https://download.pytorch.org/whl/cu129`.
   Ensure your `pip` version is recent enough (23.0+) to respect this flag.
@@ -46,6 +49,7 @@ sudo apt install -y git cmake build-essential pkg-config
 ```bash
 sudo pacman -Sy --needed git cmake base-devel pkgconf
 ```
+
 
 ### Install system build dependencies
 
@@ -75,7 +79,23 @@ sudo apt install -y intel-oneapi-mkl intel-oneapi-mkl-devel intel-oneapi-openmp
 ```
 
 > **Arch/Manjaro:** Intel distributes oneAPI MKL via the AUR (e.g. `yay -S intel-oneapi-mkl`).
-> You can skip MKL if you prefer OpenBLAS.
+
+
+### Install OpenBLAS instead of MKL
+
+If you prefer OpenBLAS (or cannot use MKL), install the packaged libraries:
+
+**Debian/Ubuntu**
+
+```bash
+sudo apt install -y libopenblas-dev
+```
+
+**Manjaro / Arch**
+
+```bash
+sudo pacman -S --needed openblas
+```
 
 ## Quick Start
 
@@ -92,7 +112,8 @@ source venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
 
-# 3) Build llama.cpp (CUDA + MKL + MMQ)
+# 3) Build llama.cpp (CUDA + BLAS + MMQ)
+#    Use --blas mkl if oneAPI MKL is installed, otherwise use --blas openblas or omit the flag for auto-detect.
 python autodevops.py --now --fast-math --force-mmq=on --blas mkl
 
 # 4) Optional: set OpenMP/MKL threading for Intel hybrid CPUs
@@ -114,6 +135,10 @@ python loadmodel.py --embed <org/repo:quant or path/to/model.gguf>
 # Reranker (Transformers)
 python loadmodel.py --rerank <HF model id>
 ```
+
+> If you request `--blas mkl` or `--blas openblas` without the corresponding libraries installed,
+> `autodevops.py` will abort with installation hints. Leaving `--blas` at the default `auto`
+> builds without BLAS when neither runtime is detected.
 
 ### Multi-GPU example
 
