@@ -21,10 +21,40 @@ def run(cmd, cwd=None, check=True, env=None):
     log(f"Running: {' '.join(map(str, cmd))}")
     return subprocess.run(cmd, cwd=cwd, check=check, env=env)
 
+def package_hint(missing: list[str]) -> str:
+    if shutil.which("apt-get"):
+        pkg_map = {
+            "gcc": "build-essential",
+            "g++": "build-essential",
+            "make": "build-essential",
+            "cmake": "cmake",
+            "git": "git",
+            "pkg-config": "pkg-config",
+        }
+        pkgs = sorted({pkg_map.get(m, m) for m in missing})
+        return "Try: sudo apt install -y " + " ".join(pkgs)
+    if shutil.which("pacman"):
+        pkg_map = {
+            "gcc": "base-devel",
+            "g++": "base-devel",
+            "make": "base-devel",
+            "cmake": "cmake",
+            "git": "git",
+            "pkg-config": "pkgconf",
+        }
+        pkgs = sorted({pkg_map.get(m, m) for m in missing})
+        return "Try: sudo pacman -S --needed " + " ".join(pkgs)
+    return ""
+
+
 def check_dependencies():
-    for d in ["git","cmake","make","gcc","g++"]:
-        if shutil.which(d) is None:
-            raise SystemExit(f"Missing dependency: {d}")
+    missing = [d for d in ["git","cmake","make","gcc","g++","pkg-config"] if shutil.which(d) is None]
+    if missing:
+        hint = package_hint(missing)
+        msg = "Missing dependency: " + ", ".join(missing)
+        if hint:
+            msg += f"\n{hint}"
+        raise SystemExit(msg)
     if shutil.which("nvidia-smi") is None:
         raise SystemExit("NVIDIA drivers not found (nvidia-smi missing)")
 
