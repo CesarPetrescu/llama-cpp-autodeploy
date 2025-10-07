@@ -112,8 +112,11 @@ source venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
 
-# 3) Build llama.cpp (CUDA + BLAS + MMQ)
-#    Use --blas mkl if oneAPI MKL is installed, otherwise use --blas openblas or omit the flag for auto-detect.
+# 3a) Build llama.cpp via the interactive wizard (recommended)
+python autodevops_cli.py
+
+# 3b) Or run the build directly with CLI flags
+#     Use --blas mkl if oneAPI MKL is installed, otherwise use --blas openblas or omit the flag for auto-detect.
 python autodevops.py --now --fast-math --force-mmq=on --blas mkl
 
 # 4) Optional: set OpenMP/MKL threading for Intel hybrid CPUs
