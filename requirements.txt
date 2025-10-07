@@ -1,4 +1,5 @@
 # Torch CUDA 12.9 builds
+--extra-index-url https://download.pytorch.org/whl/cu129
 torch==2.8.0+cu129
 torchvision==0.23.0+cu129
 torchaudio==2.8.0+cu129
