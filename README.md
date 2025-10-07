@@ -28,6 +28,24 @@ package manager commands below.
 - Python 3.8+
 - [Intel oneAPI MKL](https://www.intel.com/content/www/us/en/developer/tools/oneapi/onemkl-download.html)
   (optional but recommended for fastest CPU BLAS)
+- PyTorch CUDA 12.9 wheels are served from the official PyTorch index and the provided
+  `requirements.txt` already sets `--extra-index-url https://download.pytorch.org/whl/cu129`.
+  Ensure your `pip` version is recent enough (23.0+) to respect this flag.
+
+### Install system build dependencies
+
+**Debian/Ubuntu**
+
+```bash
+sudo apt update
+sudo apt install -y git cmake build-essential pkg-config
+```
+
+**Manjaro / Arch**
+
+```bash
+sudo pacman -Sy --needed git cmake base-devel pkgconf
+```
 
 ### Install system build dependencies
 
@@ -68,7 +86,7 @@ sudo apt install -y intel-oneapi-mkl intel-oneapi-mkl-devel intel-oneapi-openmp
 #    Manjaro/Arch:
 #      sudo pacman -Sy --needed git cmake base-devel pkgconf
 
-# 2) Python environment
+# 2) Python environment (PyTorch CUDA wheels will be pulled from the PyTorch cu129 index)
 python3 -m venv venv
 source venv/bin/activate
 pip install -U pip
