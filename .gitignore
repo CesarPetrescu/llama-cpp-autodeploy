@@ -6,11 +6,17 @@ bin/
 models/
 llama-builds/
 llama-current/
+# In case a root-level binary/symlink named exactly 'llama-current' is created
+/llama-current
 llama-cpp-latest
 
 # Logs and version tracking
 *.log
 .llama-version
+
+# Python cache
+__pycache__/
+*.pyc
 
 # Allow keeping placeholder files
 !bin/.gitkeep
