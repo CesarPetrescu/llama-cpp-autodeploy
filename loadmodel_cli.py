@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
 import loadmodel
+import memory_utils
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -357,6 +358,150 @@ class ActionOption(OptionBase):
         return line_count
 
 
+class ModelSummaryOption(OptionBase):
+    def __init__(self, state: dict, *, visible: Callable[[dict], bool] | None = None) -> None:
+        super().__init__(visible=visible)
+        self._state = state
+
+    def render(
+        self,
+        win: "curses._CursesWindow",
+        y: int,
+        width: int,
+        selected: bool,
+        state: dict,
+    ) -> int:
+        profile = memory_utils.estimate_memory_profile(self._state)
+        attr = curses.A_REVERSE if selected else curses.A_BOLD
+        win.addnstr(y, 2, "Model overview", max(10, width - 4), attr)
+        line_count = 1
+        wrap_width = max(10, width - 6)
+        for line in memory_utils.profile_summary_lines(profile):
+            for wrapped in textwrap.wrap(line, wrap_width):
+                win.addnstr(y + line_count, 6, wrapped, max(10, width - 8), curses.A_DIM)
+                line_count += 1
+        return line_count
+
+
+class MemoryVisualizerOption(OptionBase):
+    def __init__(self, state: dict, *, visible: Callable[[dict], bool] | None = None) -> None:
+        super().__init__(visible=visible)
+        self._state = state
+
+    @staticmethod
+    def _draw_bar(
+        win: "curses._CursesWindow",
+        y: int,
+        x: int,
+        width: int,
+        weights: int,
+        kv: int,
+        total: Optional[int],
+    ) -> None:
+        bar_width = max(1, width)
+        total_capacity = total if total and total > 0 else max(weights + kv, 1)
+        weight_ratio = min(max(weights / total_capacity, 0.0), 1.0)
+        kv_ratio = min(max(kv / total_capacity, 0.0), 1.0)
+        ratio_sum = weight_ratio + kv_ratio
+        if ratio_sum > 1.0:
+            weight_ratio /= ratio_sum
+            kv_ratio /= ratio_sum
+        weight_chars = int(round(weight_ratio * bar_width))
+        kv_chars = int(round(kv_ratio * bar_width))
+        while weight_chars + kv_chars > bar_width:
+            if kv_chars >= weight_chars and kv_chars > 0:
+                kv_chars -= 1
+            elif weight_chars > 0:
+                weight_chars -= 1
+            else:
+                break
+        unused_chars = max(bar_width - weight_chars - kv_chars, 0)
+        pos = x
+        if weight_chars:
+            win.addnstr(y, pos, "█" * weight_chars, weight_chars, curses.color_pair(3) | curses.A_BOLD)
+            pos += weight_chars
+        if kv_chars:
+            win.addnstr(y, pos, "▓" * kv_chars, kv_chars, curses.color_pair(4) | curses.A_BOLD)
+            pos += kv_chars
+        if unused_chars:
+            win.addnstr(y, pos, "░" * unused_chars, unused_chars, curses.A_DIM)
+
+    def handle_key(
+        self,
+        key: int,
+        state: dict,
+        stdscr: "curses._CursesWindow",
+    ) -> tuple[bool, str | None]:
+        if key in (ord("r"), ord("R")):
+            memory_utils.clear_cached_profile(self._state)
+            return False, "Memory snapshot refreshed"
+        return False, None
+
+    def render(
+        self,
+        win: "curses._CursesWindow",
+        y: int,
+        width: int,
+        selected: bool,
+        state: dict,
+    ) -> int:
+        profile = memory_utils.estimate_memory_profile(self._state)
+        attr = curses.A_REVERSE if selected else curses.A_BOLD
+        win.addnstr(y, 2, "Memory planner", max(10, width - 4), attr)
+        line_count = 1
+        legend = "Legend: █ weights  ▓ KV cache  ░ free"
+        win.addnstr(y + line_count, 6, legend, max(10, width - 8), curses.A_DIM)
+        line_count += 1
+        usable_width = max(10, width - 18)
+
+        if profile.gpus:
+            for gpu in profile.gpus:
+                label = f"GPU{gpu.info.index} {gpu.info.name}"
+                if gpu.info.total:
+                    label += f" • {memory_utils.format_bytes(gpu.info.total)} total"
+                win.addnstr(y + line_count, 4, label, max(10, width - 6), curses.A_NORMAL)
+                line_count += 1
+                bar_y = y + line_count
+                bar_x = 6
+                bar_width = min(40, usable_width)
+                total_mem = gpu.info.total if gpu.info.total and gpu.info.total > 0 else None
+                self._draw_bar(win, bar_y, bar_x, bar_width, gpu.weights, gpu.kv, total_mem)
+                used = gpu.weights + gpu.kv
+                desc = f"{memory_utils.format_bytes(used)} used (W {memory_utils.format_bytes(gpu.weights)} / KV {memory_utils.format_bytes(gpu.kv)})"
+                if gpu.info.free is not None and gpu.info.total:
+                    free_after = max(gpu.info.free - used, 0)
+                    desc += f" • free ≈{memory_utils.format_bytes(free_after)}"
+                win.addnstr(bar_y, bar_x + bar_width + 2, desc, max(10, width - (bar_x + bar_width + 4)), curses.A_DIM)
+                line_count += 1
+        else:
+            win.addnstr(y + line_count, 4, "No CUDA GPUs detected. CPU-only planning shown below.", max(10, width - 6), curses.color_pair(2) | curses.A_DIM)
+            line_count += 1
+
+        cpu_label = "System RAM"
+        if profile.cpu_total:
+            cpu_label += f" • {memory_utils.format_bytes(profile.cpu_total)} total"
+        win.addnstr(y + line_count, 4, cpu_label, max(10, width - 6), curses.A_NORMAL)
+        line_count += 1
+        bar_y = y + line_count
+        bar_x = 6
+        bar_width = min(40, usable_width)
+        cpu_total = profile.cpu_total if profile.cpu_total and profile.cpu_total > 0 else None
+        cpu_used = profile.cpu_weights + profile.cpu_kv
+        self._draw_bar(win, bar_y, bar_x, bar_width, profile.cpu_weights, profile.cpu_kv, cpu_total)
+        cpu_desc = f"{memory_utils.format_bytes(cpu_used)} used (W {memory_utils.format_bytes(profile.cpu_weights)} / KV {memory_utils.format_bytes(profile.cpu_kv)})"
+        if profile.cpu_available:
+            free_cpu = max(profile.cpu_available - cpu_used, 0)
+            cpu_desc += f" • free ≈{memory_utils.format_bytes(free_cpu)}"
+        win.addnstr(bar_y, bar_x + bar_width + 2, cpu_desc, max(10, width - (bar_x + bar_width + 4)), curses.A_DIM)
+        line_count += 1
+
+        for warn in memory_utils.warning_lines(profile):
+            win.addnstr(y + line_count, 4, f"⚠ {warn}", max(10, width - 6), curses.color_pair(2) | curses.A_BOLD)
+            line_count += 1
+
+        return line_count
+
+
 def list_local_gguf(models_dir: Path) -> List[str]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
@@ -377,6 +522,7 @@ def refresh_local_models(state: dict) -> tuple[bool, str | None]:
     base = Path(state.get("models_dir", str(loadmodel.MODELS_DIR))).expanduser()
     models = list_local_gguf(base)
     state["local_models"] = models
+    mark_profile_dirty(state)
     if not models:
         return False, "No GGUF models found in the selected directory."
     return False, f"Found {len(models)} GGUF model(s)."
@@ -389,6 +535,8 @@ def set_model_from_choice(state: dict, choice: ChoiceItem) -> None:
     candidate = (base / choice.value).expanduser()
     state["model_ref"] = str(candidate)
     state["selected_local_model"] = choice.value
+    state["model_source"] = "local"
+    mark_profile_dirty(state)
 
 
 def build_local_choices(state: dict) -> List[ChoiceItem]:
@@ -531,6 +679,95 @@ def set_status(state: dict, message: str | None) -> None:
     state["status"] = message or ""
 
 
+def mark_profile_dirty(state: dict) -> None:
+    memory_utils.clear_cached_profile(state)
+
+
+def on_models_dir_change(state: dict, _new: str) -> None:
+    mark_profile_dirty(state)
+    _, message = refresh_local_models(state)
+    set_status(state, message)
+
+
+def on_model_ref_change(state: dict, _new: str) -> None:
+    mark_profile_dirty(state)
+
+
+def on_numeric_change(state: dict, _new: str) -> None:
+    mark_profile_dirty(state)
+
+
+def on_model_source_change(state: dict, choice: ChoiceItem) -> None:
+    mark_profile_dirty(state)
+    if choice.value == "remote":
+        state["selected_local_model"] = ""
+        state["model_ref"] = str(state.get("model_ref") or "").strip()
+        if state["model_ref"] and Path(state["model_ref"]).exists():
+            state["model_ref"] = ""
+    else:
+        selected = (state.get("selected_local_model") or "").strip()
+        if selected:
+            set_model_from_choice(state, ChoiceItem(selected, selected))
+
+
+def build_gpu_strategy_choices(state: dict) -> List[ChoiceItem]:
+    gpus = memory_utils.detect_gpus()
+    count = len(gpus)
+    gpu_missing_reason = "CUDA GPU not detected"
+    items = [
+        ChoiceItem("balanced", "Even split across GPUs", enabled=count > 1, reason=None if count > 1 else "Requires ≥2 GPUs"),
+        ChoiceItem("priority", "Prioritise GPU 0", enabled=count > 1, reason=None if count > 1 else "Requires ≥2 GPUs"),
+        ChoiceItem("single", "Single GPU", enabled=count >= 1, reason=None if count >= 1 else gpu_missing_reason),
+        ChoiceItem("cpu", "Offload to system RAM", enabled=True),
+    ]
+    if count == 0:
+        for item in items[:-1]:
+            item.enabled = False
+            item.reason = gpu_missing_reason
+    return items
+
+
+def apply_gpu_strategy(state: dict, choice: ChoiceItem) -> None:
+    strategy = choice.value
+    mark_profile_dirty(state)
+    if strategy == "cpu":
+        state["tensor_split"] = ""
+        state["n_gpu_layers"] = "0"
+        return
+    gpus = memory_utils.detect_gpus()
+    if not gpus:
+        set_status(state, "No CUDA GPUs detected; falling back to system RAM.")
+        state["gpu_strategy"] = "cpu"
+        state["tensor_split"] = ""
+        state["n_gpu_layers"] = "0"
+        return
+    count = len(gpus)
+    if strategy == "single" or count == 1:
+        state["tensor_split"] = ""
+        state["n_gpu_layers"] = "999"
+        return
+    if strategy == "priority":
+        primary = 60
+        parts = [primary]
+        remaining = 100 - primary
+        others = max(count - 1, 1)
+        base = remaining // others
+        for idx in range(others):
+            share = base
+            if idx < remaining - base * others:
+                share += 1
+            parts.append(share)
+    else:  # balanced
+        base = 100 // count
+        parts = [base for _ in range(count)]
+        for idx in range(100 - base * count):
+            parts[idx % count] += 1
+    total = sum(parts)
+    if total != 100 and total > 0:
+        parts[-1] += 100 - total
+    state["tensor_split"] = ",".join(str(max(p, 0)) for p in parts)
+    state["n_gpu_layers"] = "999"
+
 def build_options(state: dict) -> List[OptionBase]:
     options: List[OptionBase] = []
 
@@ -545,6 +782,7 @@ def build_options(state: dict) -> List[OptionBase]:
                 ChoiceItem("embed", "Embeddings (llama.cpp server)"),
                 ChoiceItem("rerank", "Reranker (Transformers)")
             ],
+            on_change=lambda st, _choice: mark_profile_dirty(st),
         )
     )
 
@@ -555,7 +793,22 @@ def build_options(state: dict) -> List[OptionBase]:
             description="Directory that stores local GGUF files. Used for browsing as well as download destination.",
             state=state,
             placeholder=str(loadmodel.MODELS_DIR),
-            on_change=lambda st, _new: refresh_local_models(st),
+            on_change=on_models_dir_change,
+        )
+    )
+
+    options.append(
+        ChoiceOption(
+            key="model_source",
+            name="Model source",
+            description="Choose whether to launch a local GGUF file or reference a remote Hugging Face model.",
+            state=state,
+            choices=[
+                ChoiceItem("local", "Local GGUF"),
+                ChoiceItem("remote", "Remote (Hugging Face)")
+            ],
+            on_change=on_model_source_change,
+            visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
 
@@ -567,7 +820,7 @@ def build_options(state: dict) -> List[OptionBase]:
             state=state,
             choices_fn=build_local_choices,
             on_change=set_model_from_choice,
-            visible=lambda st: st.get("mode") in {"llm", "embed"},
+            visible=lambda st: st.get("mode") in {"llm", "embed"} and st.get("model_source", "local") == "local",
         )
     )
 
@@ -576,17 +829,38 @@ def build_options(state: dict) -> List[OptionBase]:
             name="Refresh local models",
             description="Rescan the models directory for GGUF files.",
             action=action_refresh,
-            visible=lambda st: st.get("mode") in {"llm", "embed"},
+            visible=lambda st: st.get("mode") in {"llm", "embed"} and st.get("model_source", "local") == "local",
         )
     )
 
     options.append(
         InputOption(
             key="model_ref",
-            name="Model reference",
+            name="Local model path",
+            description="Absolute or relative path to a GGUF file. Auto-filled when selecting from the local list.",
+            state=state,
+            placeholder="Auto from selection or enter ./models/model.gguf",
+            on_change=on_model_ref_change,
+            visible=lambda st: st.get("mode") in {"llm", "embed"} and st.get("model_source", "local") == "local",
+        )
+    )
+
+    options.append(
+        InputOption(
+            key="model_ref",
+            name="Remote reference",
             description="Path or Hugging Face reference (org/repo:quant or org/repo:file.gguf). Required before launching.",
             state=state,
-            placeholder="Qwen/Qwen2-7B-Instruct:Q4_K_M or ./models/model.gguf",
+            placeholder="Qwen/Qwen2-7B-Instruct:Q4_K_M",
+            on_change=on_model_ref_change,
+            visible=lambda st: st.get("mode") in {"llm", "embed"} and st.get("model_source", "local") == "remote",
+        )
+    )
+
+    options.append(
+        ModelSummaryOption(
+            state=state,
+            visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
 
@@ -627,6 +901,7 @@ def build_options(state: dict) -> List[OptionBase]:
             description="llama.cpp layers to keep on GPU. Leave blank for auto fallback.",
             state=state,
             placeholder="999",
+            on_change=on_numeric_change,
             visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
@@ -638,6 +913,7 @@ def build_options(state: dict) -> List[OptionBase]:
             description="Comma-separated split for multiple GPUs (e.g. 50,50).",
             state=state,
             placeholder="",
+            on_change=on_numeric_change,
             visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
@@ -649,9 +925,23 @@ def build_options(state: dict) -> List[OptionBase]:
             description="Context window for llama.cpp. Leave blank to use model default.",
             state=state,
             placeholder="4096",
+            on_change=on_numeric_change,
             visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
+
+    options.append(
+        ChoiceOption(
+            key="gpu_strategy",
+            name="GPU memory strategy",
+            description="Controls how llama.cpp spreads model weights across GPUs or system RAM.",
+            state=state,
+            choices_fn=build_gpu_strategy_choices,
+            on_change=apply_gpu_strategy,
+            visible=lambda st: st.get("mode") in {"llm", "embed"},
+        )
+    )
+
     options.append(
         InputOption(
             key="extra_flags",
@@ -659,6 +949,13 @@ def build_options(state: dict) -> List[OptionBase]:
             description="Additional llama-server flags added after --extra (e.g. --rope-scaling linear --rope-freq-base 10000).",
             state=state,
             placeholder="",
+            visible=lambda st: st.get("mode") in {"llm", "embed"},
+        )
+    )
+
+    options.append(
+        MemoryVisualizerOption(
+            state=state,
             visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
@@ -803,10 +1100,13 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
     curses.use_default_colors()
     curses.init_pair(1, curses.COLOR_CYAN, -1)
     curses.init_pair(2, curses.COLOR_RED, -1)
+    curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
+    curses.init_pair(4, curses.COLOR_BLUE, curses.COLOR_BLACK)
 
     state: dict = {
         "mode": "llm",
         "models_dir": str(loadmodel.MODELS_DIR),
+        "model_source": "local",
         "hf_token": os.environ.get("HF_TOKEN", ""),
         "host": "127.0.0.1",
         "port": "45540",
@@ -814,6 +1114,7 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
         "tensor_split": "",
         "ctx_size": "",
         "extra_flags": "",
+        "gpu_strategy": "balanced",
         "device": "",
         "device_map": "auto",
         "dtype": "bf16",
@@ -828,6 +1129,15 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
         "selected_local_model": "",
         "status": "",
     }
+
+    gpu_infos = memory_utils.detect_gpus()
+    if not gpu_infos:
+        state["gpu_strategy"] = "cpu"
+        state["n_gpu_layers"] = "0"
+    elif len(gpu_infos) == 1:
+        state["gpu_strategy"] = "single"
+    else:
+        state["gpu_strategy"] = "balanced"
 
     _exit, initial_msg = refresh_local_models(state)
     if initial_msg:
