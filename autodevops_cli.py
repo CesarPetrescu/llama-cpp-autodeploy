@@ -12,7 +12,7 @@ import sys
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence, Set
+from typing import Callable, List, Sequence, Set
 
 import autodevops
 
@@ -40,6 +40,28 @@ class SystemInfo:
     has_mkl: bool
     has_openblas: bool
     has_blis: bool
+
+
+SHOW_UNAVAILABLE = False
+SHOW_HARDWARE_BADGES = True
+
+
+def set_show_unavailable(value: bool) -> None:
+    global SHOW_UNAVAILABLE
+    SHOW_UNAVAILABLE = value
+
+
+def show_unavailable_enabled() -> bool:
+    return SHOW_UNAVAILABLE
+
+
+def set_show_hardware_badges(value: bool) -> None:
+    global SHOW_HARDWARE_BADGES
+    SHOW_HARDWARE_BADGES = value
+
+
+def hardware_badges_enabled() -> bool:
+    return SHOW_HARDWARE_BADGES
 
 
 class OptionBase:
@@ -74,6 +96,7 @@ class ToggleOption(OptionBase):
         disabled: bool = False,
         reason: str | None = None,
         help_text: str = "",
+        on_change: Callable[[bool], None] | None = None,
     ) -> None:
         self.key = key
         self.name = name
@@ -82,10 +105,13 @@ class ToggleOption(OptionBase):
         self.value = value
         self.disabled = disabled
         self.reason = reason
+        self._on_change = on_change
 
     def toggle(self) -> None:
         if not self.disabled:
             self.value = not self.value
+            if self._on_change is not None:
+                self._on_change(self.value)
 
     def handle_key(self, key: int) -> None:
         if key in (curses.KEY_ENTER, ord(" "), ord("t")):
@@ -96,22 +122,24 @@ class ToggleOption(OptionBase):
         if self.disabled:
             attr |= curses.color_pair(2)
         label = f"[{'x' if self.value else ' '}] {self.name}"
-        win.addnstr(y, 2, label, width - 4, attr)
+        win.addnstr(y, 2, label, max(10, width - 4), attr)
         line_count = 1
         desc_attr = curses.A_DIM
         if self.disabled:
             desc_attr |= curses.color_pair(2)
-        for line in textwrap.wrap(self.description, width - 6):
-            win.addnstr(y + line_count, 6, line, width - 8, desc_attr)
+        wrap_width = max(10, width - 6)
+        for line in textwrap.wrap(self.description, wrap_width):
+            win.addnstr(y + line_count, 6, line, max(10, width - 8), desc_attr)
             line_count += 1
         if self.disabled and self.reason:
             reason = f"⚠ {self.reason}"
-            win.addnstr(y + line_count, 6, reason, width - 8, curses.color_pair(2) | curses.A_DIM)
+            win.addnstr(y + line_count, 6, reason, max(10, width - 8), curses.color_pair(2) | curses.A_DIM)
             line_count += 1
         return line_count
 
     def height(self, width: int) -> int:
-        base = 1 + len(textwrap.wrap(self.description, width - 6))
+        wrap_width = max(10, width - 6)
+        base = 1 + len(textwrap.wrap(self.description, wrap_width))
         if self.disabled and self.reason:
             base += 1
         return base
@@ -127,6 +155,7 @@ class ChoiceOption(OptionBase):
         *,
         initial: str | None = None,
         help_text: str = "",
+        show_unavailable_fn: Callable[[], bool] | None = None,
     ) -> None:
         if not choices:
             raise ValueError("choices cannot be empty")
@@ -139,6 +168,7 @@ class ChoiceOption(OptionBase):
         self.reason = None
         if self.disabled:
             self.reason = "No enabled options"
+        self._show_unavailable_fn = show_unavailable_fn
         self.index = 0
         if initial is not None:
             for idx, c in enumerate(self.choices):
@@ -169,25 +199,55 @@ class ChoiceOption(OptionBase):
         if self.disabled:
             attr |= curses.color_pair(2)
         label = f"{self.name}: {current.label}"
-        win.addnstr(y, 2, label, width - 4, attr)
+        win.addnstr(y, 2, label, max(10, width - 4), attr)
         line_count = 1
         desc_attr = curses.A_DIM
         if self.disabled:
             desc_attr |= curses.color_pair(2)
-        for line in textwrap.wrap(self.description, width - 6):
-            win.addnstr(y + line_count, 6, line, width - 8, desc_attr)
+        wrap_width = max(10, width - 6)
+        for line in textwrap.wrap(self.description, wrap_width):
+            win.addnstr(y + line_count, 6, line, max(10, width - 8), desc_attr)
             line_count += 1
         if not current.enabled and current.reason:
             reason = f"⚠ {current.reason}"
-            win.addnstr(y + line_count, 6, reason, width - 8, curses.color_pair(2) | curses.A_DIM)
+            win.addnstr(y + line_count, 6, reason, max(10, width - 8), curses.color_pair(2) | curses.A_DIM)
             line_count += 1
+        show_unavailable = self._show_unavailable_fn() if self._show_unavailable_fn else False
+        if show_unavailable:
+            unavailable = [c for c in self.choices if not c.enabled]
+            if unavailable:
+                win.addnstr(y + line_count, 6, "Unavailable:", max(10, width - 8), curses.A_DIM)
+                line_count += 1
+                for choice in unavailable:
+                    text = choice.label
+                    if choice.reason:
+                        text += f" — {choice.reason}"
+                    list_width = max(10, width - 10)
+                    wrapped = textwrap.wrap(text, list_width) or [""]
+                    for idx, chunk in enumerate(wrapped):
+                        prefix = "• " if idx == 0 else "  "
+                        win.addnstr(y + line_count, 8, prefix + chunk, max(10, list_width), curses.A_DIM)
+                        line_count += 1
         return line_count
 
     def height(self, width: int) -> int:
-        base = 1 + len(textwrap.wrap(self.description, width - 6))
+        wrap_width = max(10, width - 6)
+        base = 1 + len(textwrap.wrap(self.description, wrap_width))
         current = self.choices[self.index]
         if not current.enabled and current.reason:
             base += 1
+        show_unavailable = self._show_unavailable_fn() if self._show_unavailable_fn else False
+        if show_unavailable:
+            unavailable = [c for c in self.choices if not c.enabled]
+            if unavailable:
+                base += 1
+                for choice in unavailable:
+                    text = choice.label
+                    if choice.reason:
+                        text += f" — {choice.reason}"
+                    list_width = max(10, width - 10)
+                    wrapped = textwrap.wrap(text, list_width) or [""]
+                    base += len(wrapped)
         return base
 
     @property
@@ -237,15 +297,65 @@ class InputOption(OptionBase):
     def render(self, win: "curses._CursesWindow", y: int, width: int, selected: bool) -> int:
         attr = curses.A_REVERSE if selected else curses.A_NORMAL
         display = self.value or self.placeholder
-        win.addnstr(y, 2, f"{self.name}: {display}", width - 4, attr)
+        win.addnstr(y, 2, f"{self.name}: {display}", max(10, width - 4), attr)
         line_count = 1
-        for line in textwrap.wrap(self.description, width - 6):
-            win.addnstr(y + line_count, 6, line, width - 8, curses.A_DIM)
+        wrap_width = max(10, width - 6)
+        for line in textwrap.wrap(self.description, wrap_width):
+            win.addnstr(y + line_count, 6, line, max(10, width - 8), curses.A_DIM)
             line_count += 1
         return line_count
 
     def height(self, width: int) -> int:
-        return 1 + len(textwrap.wrap(self.description, width - 6))
+        wrap_width = max(10, width - 6)
+        return 1 + len(textwrap.wrap(self.description, wrap_width))
+
+
+class InfoBadgeOption(OptionBase):
+    def __init__(
+        self,
+        key: str,
+        name: str,
+        description: str,
+        *,
+        help_text: str = "",
+        icon: str = "ℹ",
+        visible_fn: Callable[[], bool] | None = None,
+    ) -> None:
+        self.key = key
+        self.name = name
+        self.description = description
+        self.help_text = help_text or description
+        self.icon = icon
+        self._visible_fn = visible_fn
+        self.disabled = False
+        self.reason = None
+
+    def _visible(self) -> bool:
+        if self._visible_fn is None:
+            return True
+        return self._visible_fn()
+
+    def render(self, win: "curses._CursesWindow", y: int, width: int, selected: bool) -> int:
+        if not self._visible():
+            return 0
+        attr = curses.A_REVERSE if selected else curses.A_DIM
+        label = f"{self.icon} {self.name}"
+        win.addnstr(y, 2, label, max(10, width - 4), attr)
+        line_count = 1
+        wrap_width = max(10, width - 6)
+        for line in textwrap.wrap(self.description, wrap_width):
+            win.addnstr(y + line_count, 6, line, max(10, width - 8), curses.A_DIM)
+            line_count += 1
+        return line_count
+
+    def handle_key(self, key: int) -> None:
+        return
+
+    def height(self, width: int) -> int:
+        if not self._visible():
+            return 0
+        wrap_width = max(10, width - 6)
+        return 1 + len(textwrap.wrap(self.description, wrap_width))
 
 
 def detect_cpu_vendor() -> str:
@@ -428,11 +538,34 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
                 "Disable it to just print the recommended commands without running them."
             ),
         ),
+        ToggleOption(
+            "_show_unavailable",
+            "Show unavailable choices",
+            "Display disabled presets with explanations below each selector.",
+            value=show_unavailable_enabled(),
+            help_text=(
+                "Enabling this reveals options that are currently disabled along with the"
+                " reason they are unavailable on this system."
+            ),
+            on_change=set_show_unavailable,
+        ),
+        ToggleOption(
+            "_show_hardware_badges",
+            "Show hardware detection badges",
+            "Toggle informational badges that summarise detected CPUs and GPUs.",
+            value=hardware_badges_enabled(),
+            help_text=(
+                "Hardware badges highlight detected vendors and suggested build tips."
+                " Disable this if you prefer a minimal menu."
+            ),
+            on_change=set_show_hardware_badges,
+        ),
         ChoiceOption(
             "backend",
             "GPU backend",
             "Available GPU accelerators based on detected hardware.",
             backend_choices,
+            show_unavailable_fn=show_unavailable_enabled,
             help_text=(
                 "Choose which accelerator backend to prepare for.\n"
                 " • CUDA: native NVIDIA support with MMQ/cuBLAS kernels.\n"
@@ -447,6 +580,7 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
             "CPU optimization profile",
             "Selects tuned CMake flags derived from the comprehensive compilation guide.",
             cpu_choices,
+            show_unavailable_fn=show_unavailable_enabled,
             help_text=(
                 "Curated CPU build presets:\n"
                 " • Intel AVX2: -DGGML_AVX=ON -DGGML_AVX2=ON with -O3 -march=native.\n"
@@ -462,6 +596,7 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
             "Select BLAS acceleration for CPU fallbacks.",
             blas_choices,
             initial="auto",
+            show_unavailable_fn=show_unavailable_enabled,
             help_text=(
                 "Compare BLAS libraries: MKL excels on Intel, OpenBLAS is versatile, and AMD BLIS"
                 " leads on Ryzen. Built-in GGML kernels can win for token generation."
@@ -476,6 +611,7 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
                 ChoiceValue("On", "on"),
                 ChoiceValue("Off", "off"),
             ],
+            show_unavailable_fn=show_unavailable_enabled,
             help_text=(
                 "Force the mixed-memory (MMQ) CUDA kernels. Auto lets llama.cpp choose between"
                 " cuBLAS and MMQ depending on tensor-core support. Disable if older GPUs misbehave."
@@ -518,6 +654,7 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
             "Runtime tuning profile",
             "Suggests llama-cli runtime arguments tailored to your system budget.",
             runtime_choices,
+            show_unavailable_fn=show_unavailable_enabled,
             help_text=(
                 "Quick-start runtime templates:\n"
                 " • Balanced: -t (nproc) -ngl 35 -c 8192 -b 1024 --cache-reuse 256.\n"
@@ -531,6 +668,7 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
             "Quantization focus",
             "Guides which GGUF quantization families to prioritise when downloading models.",
             quant_choices,
+            show_unavailable_fn=show_unavailable_enabled,
             help_text=(
                 "FP16 maximises quality on capable GPUs. INT8 (Q8_0) balances speed and size."
                 " Q4_K_M keeps small VRAM footprints with acceptable quality for chatbots."
@@ -541,12 +679,10 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
     # Informational badges
     if cpu_vendor == "intel":
         options.append(
-            ToggleOption(
+            InfoBadgeOption(
                 "_info_cpu",
                 "Intel CPU detected",
                 "Optimised Intel builds with MKL are available when libraries are installed.",
-                value=True,
-                disabled=True,
                 help_text=(
                     "Detected Intel CPU. Consider the advanced MKL recipe:\n"
                     "  source /opt/intel/oneapi/setvars.sh\n"
@@ -555,77 +691,79 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
                     "        -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_AVX512=ON\n"
                     "        -DCMAKE_C_FLAGS=\"-O3 -ipo -static -fp-model=fast -march=native\""
                 ),
+                icon="🧠",
+                visible_fn=hardware_badges_enabled,
             )
         )
     elif cpu_vendor == "amd":
         options.append(
-            ToggleOption(
+            InfoBadgeOption(
                 "_info_cpu",
                 "AMD CPU detected",
                 "Install OpenBLAS/BLIS for the best CPU throughput.",
-                value=True,
-                disabled=True,
                 help_text=(
                     "Detected AMD CPU. Recommended build:\n"
                     "  cmake -B build -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_AVX_VNNI=ON\n"
                     "        -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=BLIS\n"
                     "        -DCMAKE_C_FLAGS=\"-O3 -march=native -mavx2 -mcpu=native\""
                 ),
+                icon="🧠",
+                visible_fn=hardware_badges_enabled,
             )
         )
     elif is_arm:
         options.append(
-            ToggleOption(
+            InfoBadgeOption(
                 "_info_cpu",
                 "ARM64 CPU detected",
                 "Apple/ARM builds can enable Metal or Accelerate backends automatically.",
-                value=True,
-                disabled=True,
                 help_text=(
                     "On Apple Silicon run: cmake -B build -DGGML_METAL=ON and make llama-cli."
                 ),
+                icon="🧠",
+                visible_fn=hardware_badges_enabled,
             )
         )
 
     if gpu_vendor == "nvidia":
         options.append(
-            ToggleOption(
+            InfoBadgeOption(
                 "_info_gpu",
                 "NVIDIA GPU detected",
                 "CUDA builds are available on this system.",
-                value=True,
-                disabled=True,
                 help_text=(
                     "Recommended CUDA command:\n"
                     "  cmake -B build -DGGML_CUDA=ON -DGGML_CUDA_F16=ON\n"
                     "        -DGGML_CUDA_PEER_MAX_BATCH_SIZE=128 -DCMAKE_CUDA_ARCHITECTURES=native"
                 ),
+                icon="🎮",
+                visible_fn=hardware_badges_enabled,
             )
         )
     elif gpu_vendor == "amd":
         options.append(
-            ToggleOption(
+            InfoBadgeOption(
                 "_info_gpu",
                 "AMD GPU detected",
                 "ROCm builds are supported manually via hipcc.",
-                value=True,
-                disabled=True,
                 help_text=(
                     "Export CC=/opt/rocm/llvm/bin/clang and run cmake -DGGML_HIP=ON -DAMDGPU_TARGETS=native."
                 ),
+                icon="🎮",
+                visible_fn=hardware_badges_enabled,
             )
         )
     elif gpu_vendor == "intel":
         options.append(
-            ToggleOption(
+            InfoBadgeOption(
                 "_info_gpu",
                 "Intel GPU detected",
                 "Use oneAPI SYCL builds with icx/icpx compilers.",
-                value=True,
-                disabled=True,
                 help_text=(
                     "source /opt/intel/oneapi/setvars.sh and cmake -DGGML_SYCL=ON -DGGML_SYCL_F16=ON."
                 ),
+                icon="🎮",
+                visible_fn=hardware_badges_enabled,
             )
         )
 
@@ -715,9 +853,11 @@ def draw_screen(stdscr: "curses._CursesWindow", options: List[OptionBase], selec
             stdscr.addnstr(2 + idx, 2, line, width - 4, curses.A_BOLD | curses.color_pair(2))
         y = max(y, 3 + len(message_lines[:3]))
 
+    body_width = max(1, width - 4)
     selected_help = ""
     if selected < len(options):
-        selected_help = options[selected].get_help()
+        if options[selected].height(body_width) > 0:
+            selected_help = options[selected].get_help()
     elif selected == len(options):
         selected_help = "Start the build with the currently selected presets."
     else:
@@ -733,7 +873,10 @@ def draw_screen(stdscr: "curses._CursesWindow", options: List[OptionBase], selec
     for idx, opt in enumerate(options):
         if y >= body_bottom:
             break
-        extra = opt.render(stdscr, y, width - 4, selected == idx)
+        opt_height = opt.height(body_width)
+        if opt_height <= 0:
+            continue
+        extra = opt.render(stdscr, y, body_width, selected == idx)
         y += extra
         if y >= body_bottom:
             break
@@ -770,14 +913,28 @@ def run_wizard(stdscr: "curses._CursesWindow") -> dict | None:
         draw_screen(stdscr, options, selected, message)
         key = stdscr.getch()
         message = None
+        _, width = stdscr.getmaxyx()
+        body_width = max(1, width - 4)
         if key in (ord("q"), ord("Q")):
             return None
         if key in (curses.KEY_RESIZE,):
             continue
         if key in (curses.KEY_DOWN, ord("j")):
-            selected = min(selected + 1, len(options))
+            if selected < len(options):
+                next_idx = selected + 1
+                while next_idx < len(options) and options[next_idx].height(body_width) <= 0:
+                    next_idx += 1
+                selected = next_idx if next_idx < len(options) else len(options)
+            else:
+                selected = len(options)
         elif key in (curses.KEY_UP, ord("k")):
-            selected = max(selected - 1, 0)
+            if selected == len(options):
+                prev_idx = len(options) - 1
+            else:
+                prev_idx = selected - 1
+            while prev_idx >= 0 and options[prev_idx].height(body_width) <= 0:
+                prev_idx -= 1
+            selected = prev_idx if prev_idx >= 0 else 0
         elif selected < len(options):
             opt = options[selected]
             if isinstance(opt, InputOption):

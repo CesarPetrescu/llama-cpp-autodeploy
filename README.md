@@ -129,6 +129,9 @@ export KMP_BLOCKTIME=1
 export GGML_N_THREADS=8
 
 # 5) Launch a model
+# Interactive wizard for choosing model/server
+python loadmodel_cli.py
+
 # LLM
 python loadmodel.py --llm <org/repo:quant or path/to/model.gguf>
 
