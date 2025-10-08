@@ -4,20 +4,27 @@ from __future__ import annotations
 
 import curses
 import curses.textpad
+import ipaddress
 import os
 import shlex
 import subprocess
 import sys
 import textwrap
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Tuple
+
+import socket
+from concurrent.futures import ThreadPoolExecutor
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BIN_DIR = SCRIPT_DIR / "bin"
 LLAMA_CLI = BIN_DIR / "llama-cli"
 RPC_SERVER = BIN_DIR / "rpc-server"
 MODELS_DIR = SCRIPT_DIR / "models"
+DEFAULT_RPC_PORT = "5515"
+SCAN_TIMEOUT = 0.25
 
 
 @dataclass
@@ -457,7 +464,7 @@ def build_llama_command(state: dict) -> List[str]:
 
 def build_rpc_command(state: dict) -> List[str]:
     ensure_binary(RPC_SERVER)
-    port = state.get("worker_port", "50052").strip() or "50052"
+    port = state.get("worker_port", DEFAULT_RPC_PORT).strip() or DEFAULT_RPC_PORT
     host = state.get("worker_host", "0.0.0.0").strip() or "0.0.0.0"
     cmd: List[str] = [str(RPC_SERVER), "-p", port, "--host", host]
     cache = state.get("worker_cache", "").strip()
@@ -481,6 +488,86 @@ def start_worker_process(state: dict) -> subprocess.Popen:
     return proc
 
 
+def merge_hosts(state: dict, hosts: Iterable[str]) -> None:
+    new_hosts = {h.strip() for h in hosts if h.strip()}
+    if not new_hosts:
+        return
+    existing = {h.strip() for h in state.get("rpc_hosts", "").split(",") if h.strip()}
+    combined = sorted(existing | new_hosts)
+    state["rpc_hosts"] = ",".join(combined)
+    discovered = {h.strip() for h in state.get("discovered_hosts", []) if h.strip()}
+    state["discovered_hosts"] = sorted(discovered | new_hosts)
+
+
+def _list_private_networks() -> Tuple[List[ipaddress.IPv4Network], List[str]]:
+    networks: List[ipaddress.IPv4Network] = []
+    local_ips: List[str] = []
+    try:
+        output = subprocess.check_output(
+            ["ip", "-o", "-f", "inet", "addr", "show"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return networks, local_ips
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        cidr = parts[3]
+        try:
+            iface = ipaddress.ip_interface(cidr)
+        except ValueError:
+            continue
+        ip = iface.ip
+        if ip.is_loopback or not ip.is_private:
+            continue
+        network = iface.network
+        if network.num_addresses > 256:
+            network = ipaddress.ip_network(f"{ip}/24", strict=False)
+        networks.append(network)
+        local_ips.append(str(ip))
+    # dedupe networks
+    uniq = []
+    seen = set()
+    for net in networks:
+        if net.network_address not in seen:
+            uniq.append(net)
+            seen.add(net.network_address)
+    return uniq, local_ips
+
+
+def discover_network_workers(port: str, timeout: float = SCAN_TIMEOUT) -> List[str]:
+    try:
+        port_int = int(port)
+    except ValueError:
+        return []
+    networks, local_ips = _list_private_networks()
+    if not networks:
+        return []
+    local_set = set(local_ips)
+    discovered: List[str] = []
+    lock = threading.Lock()
+
+    def probe(ip: ipaddress.IPv4Address) -> None:
+        addr = str(ip)
+        if addr in local_set:
+            return
+        try:
+            with socket.create_connection((addr, port_int), timeout=timeout):
+                with lock:
+                    discovered.append(f"{addr}:{port}")
+        except (socket.timeout, OSError):
+            pass
+
+    with ThreadPoolExecutor(max_workers=128) as executor:
+        for network in networks:
+            for host in network.hosts():
+                executor.submit(probe, host)
+
+    return sorted(set(discovered))
+
+
 def action_launch(state: dict) -> Tuple[bool, Optional[str]]:
     messages: List[str] = []
     if state.get("local_worker"):
@@ -492,6 +579,12 @@ def action_launch(state: dict) -> Tuple[bool, Optional[str]]:
                 messages.append(f"Started local rpc-server (pid {proc.pid}).")
             except (FileNotFoundError, RuntimeError) as exc:
                 return False, str(exc)
+        port = state.get("worker_port", DEFAULT_RPC_PORT).strip() or DEFAULT_RPC_PORT
+        host = state.get("worker_host", "0.0.0.0").strip() or "0.0.0.0"
+        if host in ("0.0.0.0", "::"):
+            merge_hosts(state, [f"127.0.0.1:{port}"])
+        else:
+            merge_hosts(state, [f"{host}:{port}"])
     try:
         cmd = build_llama_command(state)
     except (FileNotFoundError, ValueError) as exc:
@@ -520,11 +613,26 @@ def action_start_worker(state: dict) -> Tuple[bool, Optional[str]]:
     except (FileNotFoundError, RuntimeError) as exc:
         return False, str(exc)
     state["worker_process"] = proc
+    port = state.get("worker_port", DEFAULT_RPC_PORT).strip() or DEFAULT_RPC_PORT
+    host = state.get("worker_host", "0.0.0.0").strip() or "0.0.0.0"
+    if host in ("0.0.0.0", "::"):
+        merge_hosts(state, [f"127.0.0.1:{port}"])
+    else:
+        merge_hosts(state, [f"{host}:{port}"])
     return False, f"rpc-server started (pid {proc.pid})."
 
 
 def action_refresh_models(state: dict) -> Tuple[bool, Optional[str]]:
     return refresh_local_models(state)
+
+
+def action_scan_network(state: dict) -> Tuple[bool, Optional[str]]:
+    port = state.get("worker_port", DEFAULT_RPC_PORT).strip() or DEFAULT_RPC_PORT
+    hosts = discover_network_workers(port)
+    if hosts:
+        merge_hosts(state, hosts)
+        return False, f"Discovered {len(hosts)} worker(s) on port {port}."
+    return False, f"No rpc-server instances found on port {port}."
 
 
 def build_options(state: dict) -> List[OptionBase]:
@@ -549,6 +657,11 @@ def build_options(state: dict) -> List[OptionBase]:
             "Rescan the models directory for GGUF files.",
             action_refresh_models,
         ),
+        ActionOption(
+            "Scan network for rpc-server",
+            "Probe private subnets for rpc-server instances listening on the configured port.",
+            action_scan_network,
+        ),
         InputOption(
             "model_path",
             "Model GGUF path",
@@ -559,7 +672,7 @@ def build_options(state: dict) -> List[OptionBase]:
             "rpc_hosts",
             "Worker hosts",
             "Comma-separated list of host:port entries for rpc-server workers.",
-            placeholder="192.168.1.10:50052,192.168.1.11:50052",
+            placeholder=f"192.168.1.10:{DEFAULT_RPC_PORT},192.168.1.11:{DEFAULT_RPC_PORT}",
         ),
         InputOption(
             "ctx_size",
@@ -619,7 +732,7 @@ def build_options(state: dict) -> List[OptionBase]:
             "worker_port",
             "rpc-server port",
             "Listening port for the local rpc-server.",
-            placeholder="50052",
+            placeholder=DEFAULT_RPC_PORT,
             visible=lambda st: st.get("local_worker"),
         ),
         InputOption(
@@ -788,16 +901,27 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
         "extra_flags": "",
         "local_worker": False,
         "worker_host": "0.0.0.0",
-        "worker_port": "50052",
+        "worker_port": DEFAULT_RPC_PORT,
         "worker_cache": "",
         "worker_devices": "",
         "worker_process": None,
+        "discovered_hosts": [],
         "status": "",
     }
 
     _, initial_msg = refresh_local_models(state)
+    status_parts = []
     if initial_msg:
-        state["status"] = initial_msg
+        status_parts.append(initial_msg)
+
+    discovered = discover_network_workers(DEFAULT_RPC_PORT)
+    if discovered:
+        merge_hosts(state, discovered)
+        status_parts.append(f"Discovered {len(discovered)} worker(s) on port {DEFAULT_RPC_PORT}.")
+    elif not status_parts:
+        status_parts.append(f"No rpc-server instances detected on port {DEFAULT_RPC_PORT}.")
+
+    state["status"] = " | ".join(status_parts)
 
     options = build_options(state)
     selected_idx = first_visible(options, state)

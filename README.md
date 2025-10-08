@@ -19,7 +19,7 @@ package manager commands below.
 - Interactive TUIs:
 - `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
 - `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
-- `loadmodel_dist_cli.py` for orchestrating distributed RPC inference (multiple workers, shared models)
+- `loadmodel_dist_cli.py` for orchestrating distributed RPC inference with network auto-discovery on port 5515
 - Sample launch scripts for Qwen models in `run/`
 
 ## Interactive CLIs
