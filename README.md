@@ -16,10 +16,19 @@ package manager commands below.
 
 - Automated build with CUDA, MMQ kernels and optional Intel oneAPI MKL
 - Multi-GPU support via tensor splitting
-- `loadmodel.py` launcher for:
-  - llama.cpp LLM and embeddings servers with automatic GGUF model download
-  - Transformers-based reranker compatible with the llama.cpp `/rerank` API
+- Interactive TUIs:
+  - `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
+  - `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
 - Sample launch scripts for Qwen models in `run/`
+
+## Interactive CLIs
+
+Two text user interfaces are included for day-to-day workflows:
+
+- `autodevops_cli.py` probes your hardware and walks you through recommended llama.cpp build presets. Wide terminals automatically split the view, keeping toggles on the left and rich help text on the right.
+- `loadmodel_cli.py` lets you browse local GGUFs or remote Hugging Face models, tune runtime flags, and preview GPU/CPU memory usage with live scrollable charts.
+
+Launch either script with `python <script_name>` inside the virtual environment. Use the arrow keys to navigate, `PgUp/PgDn` to scroll long lists, and the on-screen instructions for editing values.
 
 ## Requirements
 
@@ -129,7 +138,7 @@ export KMP_BLOCKTIME=1
 export GGML_N_THREADS=8
 
 # 5) Launch a model
-# Interactive wizard for choosing model/server
+# Interactive launcher for choosing model/server and tuning memory usage
 python loadmodel_cli.py
 
 # LLM
@@ -197,4 +206,3 @@ The `run/` directory contains example launch scripts for:
 - `run_qwen_reranker8b.sh` – Qwen3 Reranker 8B server on port 45542
 
 These scripts demonstrate how to expose the services for integration with other tooling.
-

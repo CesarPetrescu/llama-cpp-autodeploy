@@ -64,6 +64,9 @@ class OptionBase:
         """Return (exit_requested, status_message)."""
         return False, None
 
+    def height(self, width: int, state: dict) -> int:
+        raise NotImplementedError
+
 
 class ChoiceOption(OptionBase):
     def __init__(
@@ -186,6 +189,16 @@ class ChoiceOption(OptionBase):
             line_count += 1
         return line_count
 
+    def height(self, width: int, state: dict) -> int:
+        self._compute_choices()
+        base = 1
+        wrap_width = max(10, width - 6)
+        base += len(textwrap.wrap(self.description, wrap_width))
+        current = self._choices[self._index]
+        if not current.enabled and current.reason:
+            base += 1
+        return base
+
 
 class InputOption(OptionBase):
     def __init__(
@@ -264,6 +277,10 @@ class InputOption(OptionBase):
             line_count += 1
         return line_count
 
+    def height(self, width: int, state: dict) -> int:
+        wrap_width = max(10, width - 6)
+        return 1 + len(textwrap.wrap(self.description, wrap_width))
+
 
 class ToggleOption(OptionBase):
     def __init__(
@@ -313,6 +330,10 @@ class ToggleOption(OptionBase):
             line_count += 1
         return line_count
 
+    def height(self, width: int, state: dict) -> int:
+        wrap_width = max(10, width - 6)
+        return 1 + len(textwrap.wrap(self.description, wrap_width))
+
 
 class ActionOption(OptionBase):
     def __init__(
@@ -357,11 +378,18 @@ class ActionOption(OptionBase):
             line_count += 1
         return line_count
 
+    def height(self, width: int, state: dict) -> int:
+        wrap_width = max(10, width - 6)
+        return 1 + len(textwrap.wrap(self.description, wrap_width))
+
 
 class ModelSummaryOption(OptionBase):
     def __init__(self, state: dict, *, visible: Callable[[dict], bool] | None = None) -> None:
         super().__init__(visible=visible)
         self._state = state
+        self.key = "_model_overview"
+        self.name = "Model overview"
+        self.description = "Overview of memory footprint for the current selection."
 
     def render(
         self,
@@ -382,11 +410,22 @@ class ModelSummaryOption(OptionBase):
                 line_count += 1
         return line_count
 
+    def height(self, width: int, state: dict) -> int:
+        profile = memory_utils.estimate_memory_profile(self._state)
+        wrap_width = max(10, width - 6)
+        lines = 1
+        for line in memory_utils.profile_summary_lines(profile):
+            lines += len(textwrap.wrap(line, wrap_width))
+        return lines
+
 
 class MemoryVisualizerOption(OptionBase):
     def __init__(self, state: dict, *, visible: Callable[[dict], bool] | None = None) -> None:
         super().__init__(visible=visible)
         self._state = state
+        self.key = "_memory_planner"
+        self.name = "Memory planner"
+        self.description = "Visual breakdown of GPU and CPU usage."
 
     @staticmethod
     def _draw_bar(
@@ -500,6 +539,18 @@ class MemoryVisualizerOption(OptionBase):
             line_count += 1
 
         return line_count
+
+    def height(self, width: int, state: dict) -> int:
+        profile = memory_utils.estimate_memory_profile(self._state)
+        lines = 2  # title + legend
+        if profile.gpus:
+            lines += 2 * len(profile.gpus)
+        else:
+            lines += 1
+        lines += 2  # CPU label + bar
+        warnings = list(memory_utils.warning_lines(profile))
+        lines += len(warnings)
+        return lines
 
 
 def list_local_gguf(models_dir: Path) -> List[str]:
@@ -1069,29 +1120,284 @@ def build_options(state: dict) -> List[OptionBase]:
     return options
 
 
+def _option_detail_lines(opt: OptionBase, state: dict) -> List[tuple[str, int]]:
+    lines: List[tuple[str, int]] = []
+    description = getattr(opt, "description", "")
+    if description:
+        lines.append((description, curses.A_NORMAL))
+    if isinstance(opt, ChoiceOption):
+        current = opt.current
+        lines.append(("", 0))
+        lines.append((f"Current: {current.label}", curses.A_DIM))
+        lines.append(("Left/Right: change selection", curses.A_DIM))
+        if not current.enabled and current.reason:
+            lines.append((f"Note: {current.reason}", curses.A_DIM))
+    elif isinstance(opt, InputOption):
+        value = str(state.get(opt.key, "")).strip()
+        lines.append(("", 0))
+        lines.append((f"Current: {value or '(blank)'}", curses.A_DIM))
+        lines.append(("Enter: edit value", curses.A_DIM))
+    elif isinstance(opt, ToggleOption):
+        enabled = bool(state.get(opt.key))
+        lines.append(("", 0))
+        lines.append((f"State: {'enabled' if enabled else 'disabled'}", curses.A_DIM))
+        lines.append(("Space/Enter: toggle", curses.A_DIM))
+    elif isinstance(opt, ActionOption):
+        lines.append(("", 0))
+        lines.append(("Enter: run this action", curses.A_DIM))
+    elif isinstance(opt, ModelSummaryOption):
+        lines.append(("", 0))
+        profile = memory_utils.estimate_memory_profile(state)
+        for line in memory_utils.profile_summary_lines(profile):
+            lines.append((line, curses.A_DIM))
+    elif isinstance(opt, MemoryVisualizerOption):
+        lines.append(("", 0))
+        lines.append(("Press 'r' to refresh the memory snapshot.", curses.A_DIM))
+        lines.append(("Bars show weights (█) and KV cache (▓) usage per device.", curses.A_DIM))
+    if not lines:
+        lines.append(("No details available.", curses.A_DIM))
+    return lines
+
+
+def _draw_wide_layout(
+    stdscr: "curses._CursesWindow",
+    visible_options: List[tuple[OptionBase, int]],
+    selected_index: int,
+    scroll: int,
+    state: dict,
+    status: str,
+    height: int,
+    width: int,
+) -> tuple[int | None, int | None]:
+    title_offset = 2
+    body_top = title_offset
+    status_y = max(0, height - 2)
+    instructions_y = max(0, height - 1)
+    body_height = max(0, status_y - body_top)
+    left_margin = 2
+    column_gap = 2
+    min_left_width = 24
+    min_right_width = 28
+
+    left_width = max(min_left_width, int(width * 0.55))
+    max_left = width - (left_margin + column_gap + min_right_width + 2)
+    if left_width > max_left:
+        left_width = max(min_left_width, max_left)
+    right_start = left_margin + left_width + column_gap
+    right_width = width - right_start - 2
+    if right_width < min_right_width:
+        right_width = max(10, min_right_width)
+        left_width = max(min_left_width, width - (left_margin + column_gap + right_width + 2))
+        right_start = left_margin + left_width + column_gap
+
+    if body_height <= 0 or left_width <= 0 or right_width <= 0:
+        warning = "Not enough space to render the launcher. Enlarge the window."
+        stdscr.addnstr(body_top, left_margin, warning[: max(1, width - 4)], max(1, width - 4), curses.A_BOLD | curses.color_pair(2))
+        return (None, None)
+
+    total_visible = len(visible_options)
+    start = max(0, min(scroll, max(0, total_visible - 1)))
+    y = body_top
+    first_rendered: int | None = None
+    last_rendered: int | None = None
+    first_render_row: int | None = None
+    last_render_row: int | None = None
+    for visible_idx in range(start, total_visible):
+        opt, _ = visible_options[visible_idx]
+        opt_height = opt.height(left_width, state)
+        if y >= status_y:
+            break
+        if opt_height > body_height and first_rendered is not None:
+            break
+        render_start = y
+        if y + opt_height > status_y:
+            if first_rendered is None:
+                extra = opt.render(stdscr, y, left_width, visible_idx == selected_index, state)
+                first_render_row = render_start
+                y += extra
+                first_rendered = visible_idx
+                last_rendered = visible_idx
+                last_render_row = y - 1
+            break
+        extra = opt.render(stdscr, y, left_width, visible_idx == selected_index, state)
+        if first_render_row is None:
+            first_render_row = render_start
+        y += extra
+        if first_rendered is None:
+            first_rendered = visible_idx
+        last_rendered = visible_idx
+        last_render_row = y - 1
+        if y >= status_y:
+            break
+        y += 1
+
+    has_more_above = start > 0
+    has_more_below = last_rendered is not None and last_rendered < total_visible - 1
+    arrow_attr = curses.A_DIM | curses.A_BOLD
+    if has_more_above and first_render_row is not None:
+        arrow_row = max(body_top, min(first_render_row, height - 1))
+        stdscr.addnstr(arrow_row, left_margin - 1, "↑", 1, arrow_attr)
+    if has_more_below and last_render_row is not None:
+        arrow_row = max(body_top, min(last_render_row, height - 1))
+        stdscr.addnstr(arrow_row, left_margin - 1, "↓", 1, arrow_attr)
+
+    separator_x = right_start - 1
+    if 0 <= separator_x < width:
+        stdscr.vline(body_top, separator_x, curses.ACS_VLINE, max(0, min(body_height, height - body_top)))
+
+    wrap_width = max(10, right_width)
+    right_y = body_top
+    if status:
+        for line in textwrap.wrap(status, wrap_width):
+            if right_y >= status_y:
+                break
+            stdscr.addnstr(right_y, right_start, line, wrap_width, curses.A_BOLD | curses.color_pair(2))
+            right_y += 1
+        if right_y < status_y:
+            right_y += 1
+
+    selected_opt: OptionBase | None = None
+    if 0 <= selected_index < len(visible_options):
+        selected_opt = visible_options[selected_index][0]
+
+    if selected_opt is not None and right_y < status_y:
+        opt_name = getattr(selected_opt, "name", None)
+        if not opt_name:
+            opt_name = selected_opt.__class__.__name__.replace("Option", "")
+            opt_name = opt_name.replace("_", " ").title()
+        header = f"Selected: {opt_name}"
+        stdscr.addnstr(right_y, right_start, header[:wrap_width], wrap_width, curses.A_BOLD)
+        right_y += 1
+        detail_lines = _option_detail_lines(selected_opt, state)
+        for raw, attr in detail_lines:
+            if right_y >= status_y:
+                break
+            if raw == "":
+                stdscr.addnstr(right_y, right_start, " " * min(wrap_width, max(1, width - right_start - 2)), wrap_width)
+                right_y += 1
+                continue
+            wrapped = textwrap.wrap(raw, wrap_width) or [""]
+            for line in wrapped:
+                if right_y >= status_y:
+                    break
+                stdscr.addnstr(right_y, right_start, line, wrap_width, attr or curses.A_NORMAL)
+                right_y += 1
+            if right_y >= status_y:
+                break
+    elif right_y < status_y:
+        stdscr.addnstr(right_y, right_start, "Selected: (none)", wrap_width, curses.A_DIM)
+
+    return (first_rendered, last_rendered)
+
+
 def draw_screen(
     stdscr: "curses._CursesWindow",
-    options: List[OptionBase],
-    state: dict,
+    visible_options: List[tuple[OptionBase, int]],
     selected_index: int,
-) -> None:
+    scroll: int,
+    state: dict,
+) -> tuple[int | None, int | None]:
     stdscr.erase()
-    h, w = stdscr.getmaxyx()
+    height, width = stdscr.getmaxyx()
+    if height < 5 or width < 20:
+        warning = "Terminal too small for loadmodel launcher. Please enlarge."
+        stdscr.addnstr(0, 0, warning[: max(1, width - 1)], max(1, width - 1), curses.A_BOLD)
+        stdscr.refresh()
+        return (None, None)
+
     title = "loadmodel launcher"
-    stdscr.addnstr(0, 2, title, w - 4, curses.A_BOLD)
-    y = 2
-    visible_options = [opt for opt in options if opt.visible(state)]
-    for idx, opt in enumerate(visible_options):
-        if y >= h - 3:
-            break
-        lines = opt.render(stdscr, y, w - 4, idx == selected_index, state)
-        y += lines + 1
+    stdscr.addnstr(0, 2, title, max(10, width - 4), curses.A_BOLD)
+
+    body_top = 2
+    instructions = "Arrows: navigate • Enter: edit/activate • PgUp/PgDn: scroll • q: quit"
     status = ensure_status(state)
-    if status:
-        stdscr.addnstr(h - 2, 2, status, w - 4, curses.color_pair(2) | curses.A_BOLD)
-    instructions = "Arrows: navigate • Enter: edit/activate • q: quit"
-    stdscr.addnstr(h - 1, 2, instructions, w - 4, curses.A_DIM)
+    instructions_y = max(0, height - 1)
+    status_y = max(0, instructions_y - 1)
+    wide_layout = width * 9 >= height * 12 and width >= 60
+
+    if wide_layout:
+        first_rendered, last_rendered = _draw_wide_layout(
+            stdscr,
+            visible_options,
+            selected_index,
+            scroll,
+            state,
+            status,
+            height,
+            width,
+        )
+        if status and status_y >= 0:
+            stdscr.addnstr(status_y, 2, status[: max(1, width - 4)], max(1, width - 4), curses.color_pair(2) | curses.A_BOLD)
+        if instructions_y >= 0:
+            stdscr.addnstr(instructions_y, 2, instructions[: max(1, width - 4)], max(1, width - 4), curses.A_DIM)
+        stdscr.refresh()
+        return (first_rendered, last_rendered)
+
+    body_bottom_exclusive = status_y
+    body_height = max(0, body_bottom_exclusive - body_top)
+
+    y = body_top
+    first_rendered: int | None = None
+    last_rendered: int | None = None
+    first_render_row: int | None = None
+    last_render_row: int | None = None
+    start = 0
+    if body_height <= 0:
+        warning = "Not enough rows to render options. Increase terminal height."
+        stdscr.addnstr(y, 2, warning[: max(1, width - 4)], max(1, width - 4), curses.A_BOLD | curses.color_pair(2))
+    else:
+        total_visible = len(visible_options)
+        start = max(0, min(scroll, max(0, total_visible - 1)))
+        for idx in range(start, total_visible):
+            opt, opt_height = visible_options[idx]
+            if opt_height <= 0:
+                continue
+            if y >= body_bottom_exclusive:
+                break
+            if opt_height > body_height and first_rendered is not None:
+                break
+            render_start = y
+            if y + opt_height > body_bottom_exclusive:
+                if first_rendered is None:
+                    lines = opt.render(stdscr, y, width - 4, idx == selected_index, state)
+                    y += lines
+                    first_rendered = last_rendered = idx
+                    first_render_row = render_start
+                    last_render_row = y - 1
+                break
+            lines = opt.render(stdscr, y, width - 4, idx == selected_index, state)
+            if first_render_row is None:
+                first_render_row = render_start
+            y += lines
+            if first_rendered is None:
+                first_rendered = idx
+            last_rendered = idx
+            last_render_row = y - 1
+            if y >= body_bottom_exclusive:
+                break
+            y += 1
+        if first_rendered is None:
+            last_rendered = None
+
+    has_more_above = body_height > 0 and start > 0
+    has_more_below = (
+        body_height > 0
+        and last_rendered is not None
+        and last_rendered < len(visible_options) - 1
+    )
+    arrow_attr = curses.A_DIM | curses.A_BOLD
+    if has_more_above and first_render_row is not None:
+        arrow_row = max(body_top, min(first_render_row, height - 1))
+        stdscr.addnstr(arrow_row, 0, "↑", 1, arrow_attr)
+    if has_more_below and last_render_row is not None:
+        arrow_row = max(body_top, min(last_render_row, height - 1))
+        stdscr.addnstr(arrow_row, 0, "↓", 1, arrow_attr)
+    if status and status_y >= 0:
+        stdscr.addnstr(status_y, 2, status[: max(1, width - 4)], max(1, width - 4), curses.color_pair(2) | curses.A_BOLD)
+    if instructions_y >= 0:
+        stdscr.addnstr(instructions_y, 2, instructions[: max(1, width - 4)], max(1, width - 4), curses.A_DIM)
     stdscr.refresh()
+    return (first_rendered, last_rendered)
 
 
 def run_tui(stdscr: "curses._CursesWindow") -> None:
@@ -1145,24 +1451,71 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
 
     options = build_options(state)
     selected_index = 0
+    scroll = 0
 
     while True:
-        visible = [opt for opt in options if opt.visible(state)]
-        if not visible:
-            set_status(state, "No options available")
-            return
-        selected_index = max(0, min(selected_index, len(visible) - 1))
-        draw_screen(stdscr, options, state, selected_index)
+        height, width = stdscr.getmaxyx()
+        body_width = max(10, width - 4)
+
+        visible_opts: List[OptionBase] = []
+        visible_entries: List[tuple[OptionBase, int]] = []
+        for opt in options:
+            if not opt.visible(state):
+                continue
+            try:
+                opt_height = max(0, opt.height(body_width, state))
+            except Exception:
+                opt_height = 1
+            visible_opts.append(opt)
+            visible_entries.append((opt, opt_height))
+
+        if not visible_entries:
+            stdscr.erase()
+            stdscr.addnstr(0, 0, "No options available.", max(10, width - 4), curses.A_BOLD | curses.color_pair(2))
+            stdscr.addnstr(1, 0, "Press 'q' to quit.", max(10, width - 4), curses.A_DIM)
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("q"), ord("Q")):
+                break
+            continue
+
+        selected_index = max(0, min(selected_index, len(visible_opts) - 1))
+        scroll = max(0, min(scroll, max(0, len(visible_opts) - 1)))
+
+        first_rendered, last_rendered = draw_screen(
+            stdscr,
+            visible_entries,
+            selected_index,
+            scroll,
+            state,
+        )
+
+        if first_rendered is not None and selected_index < first_rendered:
+            scroll = selected_index
+            continue
+        if last_rendered is not None and selected_index > last_rendered:
+            span = last_rendered - first_rendered if first_rendered is not None else 0
+            if span < 0:
+                span = 0
+            scroll = max(0, selected_index - span)
+            continue
+
         key = stdscr.getch()
         if key in (ord("q"), ord("Q")):
             break
+        if key in (curses.KEY_PPAGE,):
+            scroll = max(0, scroll - max(1, len(visible_opts) // 2))
+            continue
+        if key in (curses.KEY_NPAGE,):
+            scroll = min(len(visible_opts) - 1, scroll + max(1, len(visible_opts) // 2))
+            continue
         if key in (curses.KEY_UP, ord("k")):
-            selected_index = (selected_index - 1) % len(visible)
+            selected_index = (selected_index - 1) % len(visible_opts)
             continue
         if key in (curses.KEY_DOWN, ord("j")):
-            selected_index = (selected_index + 1) % len(visible)
+            selected_index = (selected_index + 1) % len(visible_opts)
             continue
-        exit_requested, message = visible[selected_index].handle_key(key, state, stdscr)
+        exit_requested, message = visible_opts[selected_index].handle_key(key, state, stdscr)
         if message:
             set_status(state, message)
         else:
@@ -1177,4 +1530,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

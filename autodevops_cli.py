@@ -838,65 +838,293 @@ def quantization_notes(flavour: str) -> str:
     return mapping.get(flavour, "")
 
 
-def draw_screen(stdscr: "curses._CursesWindow", options: List[OptionBase], selected: int, message: str | None) -> None:
+def _draw_wide_layout(
+    stdscr: "curses._CursesWindow",
+    options: List[OptionBase],
+    visible_options: List[tuple[int, OptionBase, int]],
+    selected: int,
+    selected_visible_idx: int | None,
+    scroll: int,
+    message: str | None,
+    selected_help: str,
+    height: int,
+    width: int,
+) -> tuple[int | None, int | None]:
+    body_top = 3
+    footer_y = height - 2
+    body_height = max(0, footer_y - body_top)
+    left_margin = 2
+    column_gap = 2
+    min_left_width = 24
+    min_right_width = 24
+
+    left_width = max(min_left_width, int(width * 0.58))
+    max_left = width - (left_margin + column_gap + min_right_width + 2)
+    if left_width > max_left:
+        left_width = max(min_left_width, max_left)
+    right_start = left_margin + left_width + column_gap
+    right_width = width - right_start - 2
+    if right_width < min_right_width:
+        right_width = max(10, min_right_width)
+        left_width = max(min_left_width, width - (left_margin + column_gap + right_width + 2))
+        right_start = left_margin + left_width + column_gap
+
+    if body_height <= 0 or left_width <= 0 or right_width <= 0:
+        warning = "Not enough space to render the dashboard. Enlarge the window."
+        stdscr.addnstr(body_top, left_margin, warning[: max(1, width - 4)], max(1, width - 4), curses.A_BOLD | curses.color_pair(2))
+        return (None, None)
+
+    total_visible = len(visible_options)
+    start = max(0, min(scroll, max(0, total_visible - 1)))
+    y = body_top
+    first_rendered: int | None = None
+    last_rendered: int | None = None
+    first_render_row: int | None = None
+    last_render_row: int | None = None
+
+    for visible_idx in range(start, total_visible):
+        opt_index, opt, _ = visible_options[visible_idx]
+        if y >= footer_y:
+            break
+        opt_height = opt.height(left_width)
+        if opt_height <= 0:
+            continue
+        render_start = y
+        if opt_height > body_height and first_rendered is not None:
+            break
+        if y + opt_height > footer_y:
+            if first_rendered is None:
+                extra = opt.render(stdscr, y, left_width, selected == opt_index)
+                first_render_row = render_start
+                y += extra
+                first_rendered = visible_idx
+                last_rendered = visible_idx
+                last_render_row = y - 1
+            break
+        extra = opt.render(stdscr, y, left_width, selected == opt_index)
+        if first_render_row is None:
+            first_render_row = render_start
+        y += extra
+        if first_rendered is None:
+            first_rendered = visible_idx
+        last_rendered = visible_idx
+        last_render_row = y - 1
+        if y >= footer_y:
+            break
+        y += 1
+
+    separator_x = right_start - 1
+    if 0 <= separator_x < width:
+        stdscr.vline(body_top, separator_x, curses.ACS_VLINE, max(0, min(body_height, height - body_top)))
+
+    has_more_above = start > 0
+    has_more_below = last_rendered is not None and last_rendered < total_visible - 1
+    arrow_attr = curses.A_DIM | curses.A_BOLD
+    if has_more_above and first_render_row is not None:
+        arrow_row = max(body_top, min(first_render_row, height - 1))
+        stdscr.addnstr(arrow_row, left_margin - 1, "↑", 1, arrow_attr)
+    if has_more_below and last_render_row is not None:
+        arrow_row = max(body_top, min(last_render_row, height - 1))
+        stdscr.addnstr(arrow_row, left_margin - 1, "↓", 1, arrow_attr)
+
+    right_y = body_top
+    wrap_width = max(10, right_width)
+    if message:
+        for line in textwrap.wrap(message, wrap_width):
+            if right_y >= footer_y:
+                break
+            stdscr.addnstr(right_y, right_start, line, wrap_width, curses.A_BOLD | curses.color_pair(2))
+            right_y += 1
+        if right_y < footer_y:
+            right_y += 1
+
+    if right_y < footer_y:
+        if selected < len(options):
+            selected_title = f"Selected: {options[selected].name}"
+        elif selected == len(options):
+            selected_title = "Selected: Start build"
+        else:
+            selected_title = "Selected"
+        stdscr.addnstr(right_y, right_start, selected_title[:wrap_width], wrap_width, curses.A_BOLD)
+        right_y += 1
+
+    detail_lines = textwrap.wrap(selected_help or "No details available.", wrap_width)
+    for line in detail_lines:
+        if right_y >= footer_y:
+            break
+        stdscr.addnstr(right_y, right_start, line, wrap_width, curses.A_DIM)
+        right_y += 1
+
+    confirm_attr = curses.A_BOLD | (curses.A_REVERSE if selected == len(options) else 0)
+    confirm_text = "Start build"
+    confirm_x = max(2, (width - len(confirm_text)) // 2)
+    stdscr.addnstr(footer_y, confirm_x, confirm_text, len(confirm_text), confirm_attr)
+
+    return (first_rendered, last_rendered)
+
+
+def draw_screen(
+    stdscr: "curses._CursesWindow",
+    options: List[OptionBase],
+    visible_options: List[tuple[int, OptionBase, int]],
+    selected: int,
+    selected_visible_idx: int | None,
+    scroll: int,
+    message: str | None,
+) -> tuple[int | None, int | None]:
     stdscr.erase()
     height, width = stdscr.getmaxyx()
+    if height < 5 or width < 20:
+        warning = "Terminal window too small for the menu. Please resize."
+        stdscr.addnstr(0, 0, warning[: max(1, width - 1)], max(1, width - 1), curses.A_BOLD)
+        stdscr.refresh()
+        return (None, None)
+
     title = "llama.cpp AutodevOps Builder"
     stdscr.addnstr(0, max(0, (width - len(title)) // 2), title, width - 1, curses.A_BOLD)
-    instructions = "Arrows: navigate • Space: toggle/cycle • Enter: edit/apply • Q: quit"
+    instructions = "Arrows: navigate • Space: toggle/cycle • Enter: edit/apply • PgUp/PgDn: scroll • Q: quit"
     stdscr.addnstr(1, max(0, (width - len(instructions)) // 2), instructions, width - 1, curses.A_DIM)
 
-    y = 3
-    if message:
-        message_lines = textwrap.wrap(message, width - 4)
-        for idx, line in enumerate(message_lines[:3]):
-            stdscr.addnstr(2 + idx, 2, line, width - 4, curses.A_BOLD | curses.color_pair(2))
-        y = max(y, 3 + len(message_lines[:3]))
+    wide_layout = width * 9 >= height * 12 and width >= 60
 
-    body_width = max(1, width - 4)
+    y = 3
     selected_help = ""
     if selected < len(options):
-        if options[selected].height(body_width) > 0:
-            selected_help = options[selected].get_help()
+        selected_help = options[selected].get_help()
     elif selected == len(options):
         selected_help = "Start the build with the currently selected presets."
-    else:
-        selected_help = ""
 
-    max_help_lines = max(4, min(10, height // 2))
-    help_lines = textwrap.wrap(selected_help or "", width - 4) or [""]
-    help_lines = help_lines[:max_help_lines]
-    help_height = len(help_lines) + 2
+    if wide_layout:
+        return _draw_wide_layout(
+            stdscr,
+            options,
+            visible_options,
+            selected,
+            selected_visible_idx,
+            scroll,
+            message,
+            selected_help,
+            height,
+            width,
+        )
 
-    body_bottom = height - help_height - 2
+    top_message_lines: List[str] = []
+    if message:
+        top_message_lines = textwrap.wrap(message, width - 4)
+        for idx, line in enumerate(top_message_lines[:3]):
+            stdscr.addnstr(2 + idx, 2, line, width - 4, curses.A_BOLD | curses.color_pair(2))
+        y = max(y, 3 + len(top_message_lines[:3]))
+
+    body_width = max(1, width - 4)
+    body_top = y
+
+    raw_help_lines = textwrap.wrap(selected_help or "", width - 4) or [""]
+    max_help_hint_lines = max(4, min(10, height // 2))
+    raw_help_lines = raw_help_lines[:max_help_hint_lines]
+
+    confirm_y = height - 2
+    if confirm_y <= y:
+        confirm_y = min(height - 1, y + 1)
+    space_below_body = max(0, confirm_y - y)
+
+    help_lines: List[str] = []
+    if raw_help_lines and space_below_body > 1:
+        max_help_lines = min(len(raw_help_lines), space_below_body - 1)
+        help_lines = raw_help_lines[:max_help_lines]
+    help_height = 1 + len(help_lines) if help_lines else 0
+
+    body_height = max(0, space_below_body - help_height)
+    body_bottom = y + body_height
     y = max(y, 3)
-    for idx, opt in enumerate(options):
+    if body_height <= 0:
+        warning = "Not enough vertical space to render menu. Enlarge the window."
+        stdscr.addnstr(y, 2, warning[: max(1, width - 4)], max(1, width - 4), curses.A_BOLD | curses.color_pair(2))
+        confirm_attr = curses.A_BOLD | (curses.A_REVERSE if selected == len(options) else 0)
+        confirm_text = "Start build"
+        confirm_x = max(2, (width - len(confirm_text)) // 2)
+        if 0 <= confirm_y < height:
+            stdscr.addnstr(confirm_y, confirm_x, confirm_text, len(confirm_text), confirm_attr)
+        stdscr.refresh()
+        return (None, None)
+
+    first_rendered: int | None = None
+    last_rendered: int | None = None
+    first_render_row: int | None = None
+    last_render_row: int | None = None
+    total_visible = len(visible_options)
+    start = max(0, min(scroll, max(0, total_visible - 1)))
+    rendered_count = 0
+    for visible_idx in range(start, total_visible):
+        opt_index, opt, _ = visible_options[visible_idx]
         if y >= body_bottom:
             break
         opt_height = opt.height(body_width)
-        if opt_height <= 0:
-            continue
-        extra = opt.render(stdscr, y, body_width, selected == idx)
+        if opt_height > body_height and rendered_count > 0:
+            break
+        render_start = y
+        if y + opt_height > body_bottom:
+            if rendered_count == 0:
+                extra = opt.render(stdscr, y, body_width, selected == opt_index)
+                if first_render_row is None:
+                    first_render_row = render_start
+                y += extra
+                first_rendered = visible_idx
+                last_rendered = visible_idx
+                last_render_row = y - 1
+            break
+        extra = opt.render(stdscr, y, body_width, selected == opt_index)
+        if first_render_row is None:
+            first_render_row = render_start
         y += extra
+        rendered_count += 1
+        if first_rendered is None:
+            first_rendered = visible_idx
+        last_rendered = visible_idx
+        last_render_row = y - 1
         if y >= body_bottom:
             break
         y += 1
 
-    stdscr.hline(body_bottom, 1, curses.ACS_HLINE, width - 2)
-    stdscr.addnstr(body_bottom, 3, " Help ", width - 6, curses.A_DIM | curses.A_BOLD)
-    for idx, line in enumerate(help_lines):
-        stdscr.addnstr(body_bottom + 1 + idx, 2, line, width - 4, curses.A_DIM)
+    has_more_above = start > 0
+    has_more_below = last_rendered is not None and last_rendered < total_visible - 1
+    arrow_attr = curses.A_DIM | curses.A_BOLD
+    if has_more_above and first_render_row is not None:
+        arrow_row = max(body_top, min(first_render_row, height - 1))
+        stdscr.addnstr(arrow_row, 0, "↑", 1, arrow_attr)
+    if has_more_below and last_render_row is not None:
+        arrow_row = max(body_top, min(last_render_row, height - 1))
+        stdscr.addnstr(arrow_row, 0, "↓", 1, arrow_attr)
+
+    help_start = body_bottom
+    help_end = body_bottom - 1
+    if help_height > 0 and help_start < confirm_y:
+        stdscr.hline(help_start, 1, curses.ACS_HLINE, width - 2)
+        stdscr.addnstr(help_start, 3, " Help ", width - 6, curses.A_DIM | curses.A_BOLD)
+        for idx, line in enumerate(help_lines):
+            row = help_start + 1 + idx
+            if row >= confirm_y:
+                break
+            stdscr.addnstr(row, 2, line, width - 4, curses.A_DIM)
+        help_end = min(help_start + len(help_lines), confirm_y - 1)
 
     confirm_attr = curses.A_BOLD | (curses.A_REVERSE if selected == len(options) else 0)
     confirm_text = "Start build"
-    stdscr.addnstr(height - 2, max(2, (width - len(confirm_text)) // 2), confirm_text, len(confirm_text), confirm_attr)
+    confirm_x = max(2, (width - len(confirm_text)) // 2)
+    if 0 <= confirm_y < height:
+        stdscr.addnstr(confirm_y, confirm_x, confirm_text, len(confirm_text), confirm_attr)
 
-    if message:
-        message_lines = textwrap.wrap(message, width - 4)
-        for idx, line in enumerate(message_lines[:2]):
-            stdscr.addnstr(height - 4 - idx, 2, line, width - 4, curses.A_BOLD | curses.color_pair(2))
+    if message and confirm_y > 0:
+        bottom_message_lines = textwrap.wrap(message, width - 4)[:2]
+        available_rows = max(0, confirm_y - help_end - 1)
+        bottom_message_lines = bottom_message_lines[:available_rows]
+        for idx, line in enumerate(bottom_message_lines):
+            row = confirm_y - 1 - idx
+            if row <= help_end or row < 0:
+                break
+            stdscr.addnstr(row, 2, line, width - 4, curses.A_BOLD | curses.color_pair(2))
 
     stdscr.refresh()
+    return (first_rendered, last_rendered)
 
 
 def run_wizard(stdscr: "curses._CursesWindow") -> dict | None:
@@ -909,32 +1137,85 @@ def run_wizard(stdscr: "curses._CursesWindow") -> dict | None:
     options = build_options()
     selected = 0
     message: str | None = None
+    scroll = 0
     while True:
-        draw_screen(stdscr, options, selected, message)
-        key = stdscr.getch()
-        message = None
-        _, width = stdscr.getmaxyx()
+        height, width = stdscr.getmaxyx()
         body_width = max(1, width - 4)
+
+        visible_options: List[tuple[int, OptionBase, int]] = []
+        selected_visible_idx: int | None = None
+        for idx, opt in enumerate(options):
+            opt_height = opt.height(body_width)
+            if opt_height <= 0:
+                continue
+            visible_options.append((idx, opt, opt_height))
+            if idx == selected:
+                selected_visible_idx = len(visible_options) - 1
+
+        if not visible_options:
+            stdscr.erase()
+            stdscr.addnstr(0, 0, "No options available.", width - 1, curses.A_BOLD | curses.color_pair(2))
+            stdscr.addnstr(1, 0, "Press 'q' to quit.", width - 1, curses.A_DIM)
+            stdscr.refresh()
+            key = stdscr.getch()
+            if key in (ord("q"), ord("Q")):
+                return None
+            continue
+
+        if selected < len(options) and selected_visible_idx is None:
+            selected = visible_options[0][0]
+            selected_visible_idx = 0
+
+        scroll = max(0, min(scroll, max(0, len(visible_options) - 1)))
+
+        first_last = draw_screen(
+            stdscr,
+            options,
+            visible_options,
+            selected,
+            selected_visible_idx,
+            scroll,
+            message,
+        )
+        message = None
+
+        if selected < len(options) and selected_visible_idx is not None:
+            first_rendered, last_rendered = first_last
+            if first_rendered is not None and selected_visible_idx < first_rendered:
+                scroll = selected_visible_idx
+                continue
+            if last_rendered is not None and selected_visible_idx > last_rendered:
+                span = last_rendered - first_rendered if first_rendered is not None else 0
+                if span < 0:
+                    span = 0
+                scroll = max(0, selected_visible_idx - span)
+                continue
+
+        key = stdscr.getch()
         if key in (ord("q"), ord("Q")):
             return None
         if key in (curses.KEY_RESIZE,):
             continue
+
         if key in (curses.KEY_DOWN, ord("j")):
             if selected < len(options):
-                next_idx = selected + 1
-                while next_idx < len(options) and options[next_idx].height(body_width) <= 0:
-                    next_idx += 1
-                selected = next_idx if next_idx < len(options) else len(options)
+                if selected_visible_idx is not None and selected_visible_idx < len(visible_options) - 1:
+                    selected = visible_options[selected_visible_idx + 1][0]
+                else:
+                    selected = len(options)
             else:
                 selected = len(options)
         elif key in (curses.KEY_UP, ord("k")):
             if selected == len(options):
-                prev_idx = len(options) - 1
+                if visible_options:
+                    selected = visible_options[-1][0]
+                else:
+                    selected = 0
             else:
-                prev_idx = selected - 1
-            while prev_idx >= 0 and options[prev_idx].height(body_width) <= 0:
-                prev_idx -= 1
-            selected = prev_idx if prev_idx >= 0 else 0
+                if selected_visible_idx is not None and selected_visible_idx > 0:
+                    selected = visible_options[selected_visible_idx - 1][0]
+                else:
+                    selected = visible_options[0][0]
         elif selected < len(options):
             opt = options[selected]
             if isinstance(opt, InputOption):
@@ -944,6 +1225,10 @@ def run_wizard(stdscr: "curses._CursesWindow") -> dict | None:
         else:
             if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
                 break
+        if key in (curses.KEY_PPAGE,):
+            scroll = max(0, scroll - max(1, len(visible_options) // 2))
+        elif key in (curses.KEY_NPAGE,):
+            scroll = min(len(visible_options) - 1, scroll + max(1, len(visible_options) // 2))
     return compile_config(options)
 
 
