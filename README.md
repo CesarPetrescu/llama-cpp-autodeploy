@@ -20,6 +20,7 @@ package manager commands below.
 - `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
 - `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
 - `loadmodel_dist_cli.py` for orchestrating distributed RPC inference with network auto-discovery on port 5515
+- `rpc_server_cli.py` for launching standalone rpc-server instances with custom ports and device bindings
 - Sample launch scripts for Qwen models in `run/`
 
 ## Interactive CLIs
@@ -205,6 +206,9 @@ python loadmodel_cli.py
 
 # Distributed RPC launcher (optional, requires GGML_RPC build)
 python loadmodel_dist_cli.py
+
+# Standalone rpc-server helper
+python rpc_server_cli.py --port 5515 --devices 0
 
 # LLM
 python loadmodel.py --llm <org/repo:quant or path/to/model.gguf>
