@@ -87,14 +87,30 @@ def get_compute_capability_str() -> str:
         log("Could not determine GPU compute capability, using default 75")
         return "75"
 
+def _is_cuda_home(path: Path) -> bool:
+    return (path / "bin" / "nvcc").exists()
+
+
+def _candidate_cuda_directories() -> list[Path]:
+    canonical = Path("/usr/local/cuda")
+    candidates: list[Path] = [canonical]
+    cuda_root = Path("/usr/local")
+    if cuda_root.exists():
+        candidates.extend(sorted(cuda_root.glob("cuda-*"), reverse=True))
+    return candidates
+
+
 def pick_cuda_home() -> Path | None:
     env_home = os.environ.get("CUDA_HOME")
-    if env_home and (Path(env_home)/"bin"/"nvcc").exists():
-        return Path(env_home)
-    # try common installs
-    for c in [Path("/usr/local/cuda"), Path("/usr/local/cuda-12.8"), Path("/usr/local/cuda-13.0")]:
-        if (c/"bin"/"nvcc").exists():
-            return c
+    if env_home:
+        env_path = Path(env_home)
+        if _is_cuda_home(env_path):
+            return env_path
+
+    for candidate in _candidate_cuda_directories():
+        if _is_cuda_home(candidate):
+            return candidate
+
     nvcc = shutil.which("nvcc")
     return Path(nvcc).resolve().parent.parent if nvcc else None
 
