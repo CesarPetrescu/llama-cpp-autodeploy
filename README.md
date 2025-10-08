@@ -17,8 +17,9 @@ package manager commands below.
 - Automated build with CUDA, MMQ kernels and optional Intel oneAPI MKL
 - Multi-GPU support via tensor splitting
 - Interactive TUIs:
-  - `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
-  - `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
+- `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
+- `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
+- `loadmodel_dist_cli.py` for orchestrating distributed RPC inference (multiple workers, shared models)
 - Sample launch scripts for Qwen models in `run/`
 
 ## Interactive CLIs
@@ -140,6 +141,9 @@ export GGML_N_THREADS=8
 # 5) Launch a model
 # Interactive launcher for choosing model/server and tuning memory usage
 python loadmodel_cli.py
+
+# Distributed RPC launcher (optional, requires GGML_RPC build)
+python loadmodel_dist_cli.py
 
 # LLM
 python loadmodel.py --llm <org/repo:quant or path/to/model.gguf>

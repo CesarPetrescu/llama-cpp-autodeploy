@@ -630,6 +630,16 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
             ),
         ),
         ToggleOption(
+            "distributed",
+            "Enable distributed RPC backend",
+            "Compile llama.cpp with GGML_RPC so rpc-server and multi-host inference are available.",
+            value=False,
+            help_text=(
+                "Turns on the GGML RPC build path. Requires NCCL/MPI and is currently considered"
+                " proof-of-concept; run only on trusted networks."
+            ),
+        ),
+        ToggleOption(
             "unified_memory",
             "Enable CUDA unified memory",
             "Sets GGML_CUDA_ENABLE_UNIFIED_MEMORY=1 at runtime for oversized models.",
@@ -1245,6 +1255,8 @@ def launch_build(config: dict) -> int:
     print(f"GPU backend: {config.get('backend', 'cuda')}")
     print(f"CPU profile: {config.get('cpu_profile', 'auto')}")
     print(f"BLAS preference: {config.get('blas', 'auto')}")
+    if config.get("distributed"):
+        print("Distributed RPC: enabled (GGML_RPC=ON)")
 
     emit_section("CPU optimisation recipe", cpu_profile_instructions(config.get("cpu_profile", "")))
     emit_section("GPU backend recipe", backend_instructions(config.get("backend", "")))
@@ -1289,6 +1301,8 @@ def launch_build(config: dict) -> int:
     blas = config.get("blas")
     if blas and blas != "auto":
         cmd.extend(["--blas", blas])
+    if config.get("distributed"):
+        cmd.append("--distributed")
 
     print("\nLaunching autodevops.py with:")
     print("  " + " ".join(cmd))

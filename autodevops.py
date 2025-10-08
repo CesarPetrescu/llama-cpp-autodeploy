@@ -183,7 +183,7 @@ def link_outputs(build_path: Path):
                 dest.unlink()
             dest.symlink_to(f)
 
-def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str):
+def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str, enable_rpc: bool):
     build_path = BUILD_ROOT / f"llama-cpp-{version}"
     clone_llama(version, build_path)
 
@@ -241,6 +241,7 @@ def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str):
     log(f"CUDA arch       : {arch}")
     log(f"BLAS            : {ggml_blas} (vendor={blas_vendor})")
     log(f"GGML_CUDA_FORCE_MMQ: {mmq}")
+    log(f"GGML_RPC         : {'ON' if enable_rpc else 'OFF'}")
     log(f"CMAKE_CUDA_FLAGS: {cuda_flags or '(none)'}")
 
     cmake_cmd = [
@@ -258,6 +259,7 @@ def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str):
     ]
     if cuda_flags:
         cmake_cmd.append(f"-DCMAKE_CUDA_FLAGS={cuda_flags}")
+    cmake_cmd.append(f"-DGGML_RPC={'ON' if enable_rpc else 'OFF'}")
 
     env = {
         **os.environ,
@@ -283,9 +285,10 @@ def test_build() -> bool:
     except subprocess.CalledProcessError:
         return False
 
-def schedule_build(version: str):
+def schedule_build(version: str, enable_rpc: bool):
     tmp = f"/tmp/llama_build_{version}.sh"
-    Path(tmp).write_text(f"#!/bin/bash\n{sys.executable} {__file__} --now\n")
+    distributed_flag = " --distributed" if enable_rpc else ""
+    Path(tmp).write_text(f"#!/bin/bash\n{sys.executable} {__file__} --now{distributed_flag}\n")
     os.chmod(tmp, 0o755)
     if shutil.which("at"):
         run(["bash","-c",f"echo {tmp} | at 02:00"])
@@ -297,16 +300,16 @@ def main(args):
     ref = get_ref(args.ref)
     log(f"Target llama.cpp ref: {ref}")
     if args.now:
-        build_llama(ref, args.force_mmq, args.fast_math, args.blas)
+        build_llama(ref, args.force_mmq, args.fast_math, args.blas, args.distributed)
         log("Build completed successfully" if test_build() else "Build failed")
     else:
         if is_new_version(ref):
             if datetime.now().strftime("%H") == "02":
-                build_llama(ref, args.force_mmq, args.fast_math, args.blas)
+                build_llama(ref, args.force_mmq, args.fast_math, args.blas, args.distributed)
                 test_build()
                 log("Scheduled build completed")
             else:
-                schedule_build(ref); log("New version found; build scheduled for 2 AM")
+                schedule_build(ref, args.distributed); log("New version found; build scheduled for 2 AM")
         else:
             log("Already up to date")
 
@@ -317,5 +320,6 @@ if __name__ == "__main__":
     p.add_argument("--fast-math", action="store_true", help="pass --use_fast_math to NVCC")
     p.add_argument("--force-mmq", choices=["auto","on","off"], default="auto", help="toggle MMQ CUDA kernels")
     p.add_argument("--blas", choices=["auto","openblas","mkl","off"], default="auto", help="choose BLAS for CPU path")
+    p.add_argument("--distributed", action="store_true", help="enable GGML RPC backend for distributed inference")
     args = p.parse_args()
     main(args)
