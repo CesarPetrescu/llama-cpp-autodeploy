@@ -61,6 +61,67 @@ sudo pacman -Sy --needed git cmake base-devel pkgconf
 ```
 
 
+### Install the NVIDIA CUDA Toolkit (required for fast-math builds)
+
+The **Enable fast math** toggle in `autodevops_cli.py` enables NVCC's
+`--use_fast_math` flag. The option remains disabled until the CUDA Toolkit (and
+its `nvcc` compiler) is detected. The wizard shows *“NVCC (CUDA Toolkit) not
+found — set CUDA_HOME or install cuda-toolkit”* when this happens.
+
+1. Install the toolkit for your distribution.
+2. Ensure `nvcc` is on your `$PATH` or set `CUDA_HOME` to the toolkit prefix
+   (commonly `/usr/local/cuda`).
+3. Re-run `python autodevops_cli.py` to refresh the hardware scan.
+
+**Debian / Ubuntu (via NVIDIA’s APT repository)**
+
+```bash
+sudo apt update
+sudo apt install -y software-properties-common gnupg lsb-release
+DIST_ID=$(lsb_release -is | tr '[:upper:]' '[:lower:]')
+DIST_VER=$(lsb_release -rs | tr -d .)
+CUDA_REPO=${DIST_ID}${DIST_VER}
+wget https://developer.download.nvidia.com/compute/cuda/repos/${CUDA_REPO}/x86_64/cuda-${CUDA_REPO}.pin
+sudo mv cuda-${CUDA_REPO}.pin /etc/apt/preferences.d/cuda-repository-pin-600
+wget https://developer.download.nvidia.com/compute/cuda/repos/${CUDA_REPO}/x86_64/3bf863cc.pub
+sudo mv 3bf863cc.pub /usr/share/keyrings/nvidia-cuda-repo.gpg
+echo "deb [signed-by=/usr/share/keyrings/nvidia-cuda-repo.gpg] https://developer.download.nvidia.com/compute/cuda/repos/${CUDA_REPO}/x86_64/ /" \
+  | sudo tee /etc/apt/sources.list.d/cuda-${CUDA_REPO}.list
+sudo apt update
+sudo apt install -y cuda-toolkit-12-4
+```
+
+> Substitute `12-4` with the latest toolkit branch if needed. Log out/in after
+> installation so the PATH additions in `/etc/profile.d/cuda.sh` load.
+
+**Manjaro / Arch**
+
+```bash
+sudo pacman -Sy --needed cuda
+```
+
+The package installs to `/opt/cuda`. Export `CUDA_HOME` so the wizard can find
+it:
+
+```bash
+echo 'export CUDA_HOME=/opt/cuda' >> ~/.bashrc
+echo 'export PATH=$CUDA_HOME/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Verify CUDA Toolkit detection
+
+Check that `nvcc` is reachable before enabling fast math:
+
+```bash
+nvcc --version
+which nvcc
+```
+
+If the commands print valid paths, the fast-math toggle becomes available. If
+they fail, verify `CUDA_HOME` points at the toolkit directory.
+
+
 ### Install system build dependencies
 
 **Debian/Ubuntu**
