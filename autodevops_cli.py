@@ -434,6 +434,13 @@ def collect_system_info() -> SystemInfo:
     )
 
 
+def _attach_detection_metadata(config: dict, info: SystemInfo) -> dict:
+    enriched = dict(config)
+    enriched["detected_gpu_vendor"] = info.gpu_vendor
+    enriched["detected_cuda_home"] = str(info.cuda_home) if info.cuda_home else None
+    return enriched
+
+
 def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
     """Build the interactive option list.
 
@@ -452,7 +459,10 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
     fast_math_disabled = not has_cuda
     fast_math_reason = None
     if fast_math_disabled:
-        fast_math_reason = "NVCC not found on this system"
+        if gpu_vendor == "nvidia":
+            fast_math_reason = "NVCC (CUDA Toolkit) not found — set CUDA_HOME or install cuda-toolkit"
+        else:
+            fast_math_reason = "NVCC not found on this system"
 
     blas_choices = [
         ChoiceValue("Auto", "auto"),
@@ -463,7 +473,12 @@ def build_options(system_info: SystemInfo | None = None) -> List[OptionBase]:
     ]
 
     backend_choices = [
-        ChoiceValue("CUDA (NVIDIA)", "cuda", has_cuda, "CUDA Toolkit not found" if not has_cuda else None),
+        ChoiceValue(
+            "CUDA (NVIDIA)",
+            "cuda",
+            has_cuda,
+            "CUDA Toolkit not found (set CUDA_HOME or install cuda-toolkit)" if not has_cuda else None,
+        ),
         ChoiceValue("ROCm (AMD)", "rocm", gpu_vendor == "amd", "ROCm toolchain not detected"),
         ChoiceValue("oneAPI / SYCL (Intel)", "oneapi", gpu_vendor == "intel", "Intel oneAPI compilers not detected"),
         ChoiceValue("Vulkan (universal)", "vulkan", True),
@@ -1144,7 +1159,8 @@ def run_wizard(stdscr: "curses._CursesWindow") -> dict | None:
     curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)
     curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
-    options = build_options()
+    system_info = collect_system_info()
+    options = build_options(system_info=system_info)
     selected = 0
     message: str | None = None
     scroll = 0
@@ -1239,7 +1255,8 @@ def run_wizard(stdscr: "curses._CursesWindow") -> dict | None:
             scroll = max(0, scroll - max(1, len(visible_options) // 2))
         elif key in (curses.KEY_NPAGE,):
             scroll = min(len(visible_options) - 1, scroll + max(1, len(visible_options) // 2))
-    return compile_config(options)
+    config = compile_config(options)
+    return _attach_detection_metadata(config, system_info)
 
 
 def launch_build(config: dict) -> int:
@@ -1257,6 +1274,14 @@ def launch_build(config: dict) -> int:
     print(f"BLAS preference: {config.get('blas', 'auto')}")
     if config.get("distributed"):
         print("Distributed RPC: enabled (GGML_RPC=ON)")
+
+    gpu_vendor = config.get("detected_gpu_vendor") or "unknown"
+    print(f"Detected GPU vendor: {gpu_vendor}")
+    cuda_home = config.get("detected_cuda_home")
+    if cuda_home:
+        print(f"Detected CUDA toolkit: {cuda_home}")
+    else:
+        print("Detected CUDA toolkit: not found (set CUDA_HOME or install cuda-toolkit)")
 
     emit_section("CPU optimisation recipe", cpu_profile_instructions(config.get("cpu_profile", "")))
     emit_section("GPU backend recipe", backend_instructions(config.get("backend", "")))

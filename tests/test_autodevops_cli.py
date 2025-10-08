@@ -1,4 +1,6 @@
+import io
 import unittest
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 
 from autodevops_cli import (
@@ -11,6 +13,7 @@ from autodevops_cli import (
     backend_instructions,
     runtime_profile_instructions,
     quantization_notes,
+    launch_build,
 )
 
 
@@ -107,6 +110,26 @@ class BuildOptionsTestCase(unittest.TestCase):
 
         self.assertIn("GGUF", quantization_notes("q4_k_m"))
         self.assertEqual("", quantization_notes("auto"))
+
+    def test_launch_build_reports_detection_metadata(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        config = {
+            "ref": "latest",
+            "backend": "cuda",
+            "cpu_profile": "auto",
+            "blas": "auto",
+            "detected_gpu_vendor": "nvidia",
+            "detected_cuda_home": "/usr/local/cuda",
+            "now": False,
+        }
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            rc = launch_build(config)
+
+        self.assertEqual(rc, 0)
+        output = stdout.getvalue()
+        self.assertIn("Detected GPU vendor: nvidia", output)
+        self.assertIn("Detected CUDA toolkit: /usr/local/cuda", output)
 
 
 if __name__ == "__main__":
