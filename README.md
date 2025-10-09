@@ -16,10 +16,10 @@ package manager commands below.
 
 - Automated build with CUDA, MMQ kernels and optional Intel oneAPI MKL
 - Multi-GPU support via tensor splitting
-- Interactive TUIs:
+- Interactive TUIs with responsive layouts, persistent settings, scrollable help/log panes, and Tab-based focus control:
   - `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
   - `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
-- `loadmodel_dist_cli.py` for orchestrating distributed RPC inference with network auto-discovery on port 5515
+  - `loadmodel_dist_cli.py` for orchestrating distributed RPC inference with network auto-discovery on port 5515
 - `rpc_server_cli.py` for launching standalone rpc-server instances with custom ports and device bindings
 
 > The distributed workflow relies on llama.cpp’s RPC backend, which implements tensor/model parallelism over TCP. The main `llama-cli` process delegates tensor shards to one or more `rpc-server` workers, each running on a separate machine and returning partial results in parallel.
@@ -27,12 +27,21 @@ package manager commands below.
 
 ## Interactive CLIs
 
-Two text user interfaces are included for day-to-day workflows:
+Three text user interfaces are included for day-to-day workflows:
 
 - `autodevops_cli.py` probes your hardware and walks you through recommended llama.cpp build presets. Wide terminals automatically split the view, keeping toggles on the left and rich help text on the right.
 - `loadmodel_cli.py` lets you browse local GGUFs or remote Hugging Face models, tune runtime flags, and preview GPU/CPU memory usage with live scrollable charts.
+- `loadmodel_dist_cli.py` manages distributed RPC setups, auto-scanning private subnets for rpc-server workers and launching `llama-cli` with the appropriate `--rpc` hosts list.
 
-Launch either script with `python <script_name>` inside the virtual environment. Use the arrow keys to navigate, `PgUp/PgDn` to scroll long lists, and the on-screen instructions for editing values.
+Shared UX features:
+
+- **Responsive layout**: narrow, tablet, and wide breakpoints automatically reflow content; ultra-wide layouts dedicate the right pane to contextual help and discovery messages.
+- **Tab navigation**: press `Tab` to cycle focus between the main option list, the help pane, and the logs pane. Each pane accepts `↑/↓`, `PgUp/PgDn`, `Home/End` for scrolling.
+- **Persistent settings**: the TUIs write the last-used configuration to `.autodevops_cli.json`, `.loadmodel_cli.json`, and `.loadmodel_dist_cli.json` in the repository root so state is restored on the next launch.
+- **Contextual help**: press `?` to toggle between condensed and full help text. Entries show inline badges (`[SEL]`, `[TGL]`, `[TXT]`, `[ACT]`) and an asterisk when deviating from defaults.
+- **Logs & status**: the bottom pane shows rolling logs (200 entry history). `loadmodel_dist_cli.py` logs discovery events, local rpc-server launches, and `llama-cli` exit codes so you can backtrack after an interrupted run.
+
+Launch any script with `python <script_name>` inside the virtual environment. Use the arrow keys to navigate, `PgUp/PgDn` to scroll long lists, and follow the on-screen status line for additional key hints.
 
 ### Example: Distributed Setup Across Two PCs
 

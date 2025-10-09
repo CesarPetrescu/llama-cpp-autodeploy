@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import curses
 import curses.textpad
+import json
 import os
 import shlex
 import subprocess
 import sys
 import textwrap
+import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
@@ -19,6 +22,120 @@ import memory_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 LOADMODEL_SCRIPT = SCRIPT_DIR / "loadmodel.py"
+
+STRINGS = {
+    "title": "loadmodel launcher",
+    "instructions": "Arrows: navigate • Enter: edit/activate • PgUp/PgDn: scroll • Tab: cycle panes • ?: toggle help • q: quit",
+    "logs_heading": "Logs",
+    "help_heading": "Help",
+}
+
+
+def append_log(ui_state: dict, message: str) -> None:
+    if not message:
+        return
+    logs = ui_state.setdefault("logs", deque(maxlen=LOG_HISTORY))
+    timestamp = time.strftime("%H:%M:%S")
+    logs.append(f"[{timestamp}] {message}")
+    ui_state["status_message"] = message
+    ui_state.setdefault("logs_offset", 0)
+    if ui_state.get("focus_area", 0) != 2:
+        ui_state["logs_offset"] = 0
+
+
+def load_saved_state() -> dict:
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    return {}
+
+
+def save_state(options: List["OptionBase"]) -> None:
+    payload = {}
+    for opt in options:
+        try:
+            payload[opt.key] = opt.get_value()
+        except Exception:
+            continue
+    try:
+        CONFIG_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def apply_saved_values(options: List["OptionBase"], saved: dict) -> None:
+    if not saved:
+        return
+    for opt in options:
+        if opt.key in saved:
+            try:
+                opt.set_value(saved[opt.key])
+            except Exception:
+                continue
+
+
+def draw_logs(
+    stdscr: "curses._CursesWindow",
+    ui_state: dict,
+    start_row: int,
+    width: int,
+    height: int,
+) -> int:
+    logs = list(ui_state.get("logs", []))
+    if not logs or start_row >= height:
+        ui_state["logs_max_offset"] = 0
+        ui_state["logs_visible_rows"] = 0
+        return 0
+    focus = ui_state.get("focus_area", 0) == 2
+    available_rows = max(0, height - start_row)
+    if available_rows <= 0:
+        ui_state["logs_max_offset"] = 0
+        ui_state["logs_visible_rows"] = 0
+        return 0
+
+    heading_attr = curses.A_BOLD | (curses.A_REVERSE if focus else curses.A_DIM)
+    stdscr.addnstr(
+        start_row,
+        2,
+        STRINGS["logs_heading"][: max(1, width - 4)],
+        max(1, width - 4),
+        heading_attr,
+    )
+    if available_rows == 1:
+        ui_state["logs_max_offset"] = 0
+        ui_state["logs_visible_rows"] = 0
+        return 1
+
+    body_rows = available_rows - 1
+    ui_state.setdefault("logs_offset", 0)
+    max_start = max(0, len(logs) - body_rows)
+    offset = min(max(0, ui_state["logs_offset"]), max_start)
+    first_idx = max_start - offset
+    first_idx = max(0, first_idx)
+    slice_logs = logs[first_idx : first_idx + body_rows]
+    ui_state["logs_offset"] = offset
+    ui_state["logs_max_offset"] = max_start
+    ui_state["logs_visible_rows"] = len(slice_logs)
+
+    for idx, line in enumerate(slice_logs, start=1):
+        attr = curses.A_DIM | (curses.A_REVERSE if focus else 0)
+        stdscr.addnstr(
+            start_row + idx,
+            2,
+            line[: max(1, width - 4)],
+            max(1, width - 4),
+            attr,
+        )
+    return 1 + len(slice_logs)
+CONFIG_PATH = SCRIPT_DIR / ".loadmodel_cli.json"
+LOG_HISTORY = 200
+SPINNER_FRAMES = "|/-\\"
 
 
 @dataclass
@@ -33,6 +150,8 @@ class OptionBase:
     key: str
     name: str
     description: str
+    default_value: object
+    icon: str = "[OPT]"
 
     def __init__(self, *, visible: Callable[[dict], bool] | None = None) -> None:
         self._visible = visible
@@ -67,6 +186,24 @@ class OptionBase:
     def height(self, width: int, state: dict) -> int:
         raise NotImplementedError
 
+    def is_modified(self, state: dict) -> bool:
+        return False
+
+    def get_summary(self, width: int) -> str:
+        text = (self.description or "").strip()
+        if not text:
+            return ""
+        summary = text.splitlines()[0].strip()
+        if len(summary) > width:
+            summary = summary[: max(0, width - 1)] + "…"
+        return summary
+
+    def get_value(self):
+        raise NotImplementedError
+
+    def set_value(self, value) -> None:
+        raise NotImplementedError
+
 
 class ChoiceOption(OptionBase):
     def __init__(
@@ -94,8 +231,10 @@ class ChoiceOption(OptionBase):
         self._on_change = on_change
         self._choices: list[ChoiceItem] = []
         self._index = 0
+        self.icon = "[SEL]"
         if key not in state and self._static_choices:
             state[key] = self._static_choices[0].value
+        self.default_value = state.get(key)
 
     def _compute_choices(self) -> None:
         if self._choices_fn is not None:
@@ -171,8 +310,12 @@ class ChoiceOption(OptionBase):
         self._compute_choices()
         attr = curses.A_REVERSE if selected else curses.A_NORMAL
         current = self._choices[self._index]
-        label = f"{self.name}: {current.label}"
+        marker = "*" if self.is_modified(state) else " "
+        label = f"{marker}{self.icon} {self.name}: {current.label}"
         win.addnstr(y, 2, label, max(10, width - 4), attr)
+        summary = self.get_summary(max(0, width - len(label) - 6))
+        if summary:
+            win.addnstr(y, min(width - 2, 2 + len(label) + 1), f" · {summary}", max(10, width - len(label) - 4), curses.A_DIM)
         line_count = 1
         wrap_width = max(10, width - 6)
         for line in textwrap.wrap(self.description, wrap_width):
@@ -199,6 +342,21 @@ class ChoiceOption(OptionBase):
             base += 1
         return base
 
+    def is_modified(self, state: dict) -> bool:
+        return self._state.get(self.key) != self.default_value
+
+    def get_value(self):
+        self._compute_choices()
+        return self._choices[self._index].value
+
+    def set_value(self, value) -> None:
+        self._compute_choices()
+        for idx, item in enumerate(self._choices):
+            if item.value == value:
+                self._index = idx
+                self._state[self.key] = item.value
+                break
+
 
 class InputOption(OptionBase):
     def __init__(
@@ -219,7 +377,9 @@ class InputOption(OptionBase):
         self.placeholder = placeholder
         self._state = state
         self._on_change = on_change
-        state.setdefault(key, "")
+        self.icon = "[TXT]"
+        self.default_value = state.get(key, "")
+        state.setdefault(key, self.default_value)
 
     def edit(self, stdscr: "curses._CursesWindow") -> None:
         h, w = stdscr.getmaxyx()
@@ -269,7 +429,12 @@ class InputOption(OptionBase):
         attr = curses.A_REVERSE if selected else curses.A_NORMAL
         value = str(self._state.get(self.key, "")).strip()
         display = value or self.placeholder
-        win.addnstr(y, 2, f"{self.name}: {display}", max(10, width - 4), attr)
+        marker = "*" if self.is_modified(state) else " "
+        label = f"{marker}{self.icon} {self.name}: {display}"
+        win.addnstr(y, 2, label, max(10, width - 4), attr)
+        summary = self.get_summary(max(0, width - len(label) - 6))
+        if summary:
+            win.addnstr(y, min(width - 2, 2 + len(label) + 1), f" · {summary}", max(10, width - len(label) - 4), curses.A_DIM)
         line_count = 1
         wrap_width = max(10, width - 6)
         for line in textwrap.wrap(self.description, wrap_width):
@@ -280,6 +445,17 @@ class InputOption(OptionBase):
     def height(self, width: int, state: dict) -> int:
         wrap_width = max(10, width - 6)
         return 1 + len(textwrap.wrap(self.description, wrap_width))
+
+    def is_modified(self, state: dict) -> bool:
+        return str(state.get(self.key, "")) != str(self.default_value)
+
+    def get_value(self):
+        return self._state.get(self.key, "")
+
+    def set_value(self, value) -> None:
+        if value is None:
+            return
+        self._state[self.key] = str(value)
 
 
 class ToggleOption(OptionBase):
@@ -297,7 +473,9 @@ class ToggleOption(OptionBase):
         self.name = name
         self.description = description
         self._state = state
-        state.setdefault(key, False)
+        self.icon = "[TGL]"
+        self.default_value = bool(state.get(key, False))
+        state.setdefault(key, self.default_value)
 
     def toggle(self) -> None:
         self._state[self.key] = not bool(self._state.get(self.key))
@@ -322,7 +500,12 @@ class ToggleOption(OptionBase):
     ) -> int:
         attr = curses.A_REVERSE if selected else curses.A_NORMAL
         mark = "✔" if self._state.get(self.key) else "✖"
-        win.addnstr(y, 2, f"[{mark}] {self.name}", max(10, width - 4), attr)
+        marker = "*" if self.is_modified(state) else " "
+        label = f"{marker}{self.icon} [{mark}] {self.name}"
+        win.addnstr(y, 2, label, max(10, width - 4), attr)
+        summary = self.get_summary(max(0, width - len(label) - 6))
+        if summary:
+            win.addnstr(y, min(width - 2, 2 + len(label) + 1), f" · {summary}", max(10, width - len(label) - 4), curses.A_DIM)
         line_count = 1
         wrap_width = max(10, width - 6)
         for line in textwrap.wrap(self.description, wrap_width):
@@ -333,6 +516,15 @@ class ToggleOption(OptionBase):
     def height(self, width: int, state: dict) -> int:
         wrap_width = max(10, width - 6)
         return 1 + len(textwrap.wrap(self.description, wrap_width))
+
+    def is_modified(self, state: dict) -> bool:
+        return bool(state.get(self.key)) != self.default_value
+
+    def get_value(self):
+        return bool(self._state.get(self.key))
+
+    def set_value(self, value) -> None:
+        self._state[self.key] = bool(value)
 
 
 class ActionOption(OptionBase):
@@ -1159,12 +1351,72 @@ def _option_detail_lines(opt: OptionBase, state: dict) -> List[tuple[str, int]]:
     return lines
 
 
+def prepare_help_panel(
+    selected_opt: OptionBase | None,
+    state: dict,
+    wrap_width: int,
+    available_rows: int,
+    ui_state: dict,
+    height: int,
+) -> tuple[str, List[tuple[str, int]], bool]:
+    if selected_opt is None:
+        ui_state["help_max_offset"] = 0
+        ui_state["help_visible_lines"] = 0
+        ui_state["help_total_lines"] = 0
+        ui_state.setdefault("help_offset", 0)
+        return ("Selected: (none)", [], False)
+
+    opt_name = getattr(selected_opt, "name", None)
+    if not opt_name:
+        opt_name = selected_opt.__class__.__name__.replace("Option", "")
+        opt_name = opt_name.replace("_", " ").title()
+    header_text = f"Selected: {opt_name}"
+
+    detail_pairs = _option_detail_lines(selected_opt, state)
+    full_help_lines: List[tuple[str, int]] = []
+    for raw, attr in detail_pairs:
+        style = attr or curses.A_NORMAL
+        if raw == "":
+            full_help_lines.append(("", style))
+            continue
+        wrapped = textwrap.wrap(raw, wrap_width) or [""]
+        for line in wrapped:
+            full_help_lines.append((line, style))
+
+    max_preview = max(5, min(10, height // 2))
+    show_full_help = ui_state.get("show_full_help", False)
+    help_source = full_help_lines if show_full_help else full_help_lines[:max_preview]
+
+    ui_state["help_total_lines"] = len(help_source)
+    ui_state.setdefault("help_offset", 0)
+    available_rows = max(0, available_rows)
+    max_offset = max(0, len(help_source) - available_rows)
+    help_offset = min(max(0, ui_state.get("help_offset", 0)), max_offset)
+    ui_state["help_offset"] = help_offset
+    ui_state["help_max_offset"] = max_offset
+    visible_help = help_source[help_offset : help_offset + available_rows]
+    ui_state["help_visible_lines"] = len(visible_help)
+
+    indicator = ""
+    if help_offset > 0:
+        indicator += "↑"
+    if help_offset < max_offset:
+        indicator += "↓"
+    if not show_full_help and len(help_source) < len(full_help_lines):
+        indicator += "+"
+    if indicator:
+        header_text = f"{header_text} ({indicator})"
+
+    return (header_text, visible_help, True)
+
+
 def _draw_wide_layout(
     stdscr: "curses._CursesWindow",
     visible_options: List[tuple[OptionBase, int]],
     selected_index: int,
     scroll: int,
     state: dict,
+    ui_state: dict,
     status: str,
     height: int,
     width: int,
@@ -1260,32 +1512,155 @@ def _draw_wide_layout(
     if 0 <= selected_index < len(visible_options):
         selected_opt = visible_options[selected_index][0]
 
-    if selected_opt is not None and right_y < status_y:
-        opt_name = getattr(selected_opt, "name", None)
-        if not opt_name:
-            opt_name = selected_opt.__class__.__name__.replace("Option", "")
-            opt_name = opt_name.replace("_", " ").title()
-        header = f"Selected: {opt_name}"
-        stdscr.addnstr(right_y, right_start, header[:wrap_width], wrap_width, curses.A_BOLD)
+    focus_area = ui_state.get("focus_area", 0)
+    help_focus = focus_area == 1
+
+    if right_y < status_y:
+        available_rows = status_y - (right_y + 1)
+        header_text, visible_help, has_selection = prepare_help_panel(
+            selected_opt,
+            state,
+            wrap_width,
+            available_rows,
+            ui_state,
+            height,
+        )
+        header_attr = curses.A_BOLD | (curses.A_REVERSE if help_focus else 0)
+        stdscr.addnstr(right_y, right_start, header_text[:wrap_width], wrap_width, header_attr)
         right_y += 1
-        detail_lines = _option_detail_lines(selected_opt, state)
-        for raw, attr in detail_lines:
+        for line, attr in visible_help:
             if right_y >= status_y:
                 break
-            if raw == "":
-                stdscr.addnstr(right_y, right_start, " " * min(wrap_width, max(1, width - right_start - 2)), wrap_width)
-                right_y += 1
-                continue
-            wrapped = textwrap.wrap(raw, wrap_width) or [""]
-            for line in wrapped:
-                if right_y >= status_y:
-                    break
-                stdscr.addnstr(right_y, right_start, line, wrap_width, attr or curses.A_NORMAL)
-                right_y += 1
-            if right_y >= status_y:
+            line_attr = (attr or curses.A_DIM) | (curses.A_REVERSE if help_focus else 0)
+            stdscr.addnstr(right_y, right_start, line[:wrap_width], wrap_width, line_attr)
+            right_y += 1
+        if not has_selection:
+            ui_state["help_max_offset"] = 0
+            ui_state["help_visible_lines"] = 0
+    else:
+        ui_state["help_max_offset"] = 0
+        ui_state["help_visible_lines"] = 0
+        ui_state.setdefault("help_total_lines", 0)
+
+    draw_logs(stdscr, ui_state, max(body_top, status_y - 3), width, height)
+
+    return (first_rendered, last_rendered)
+
+
+def _draw_tablet_layout(
+    stdscr: "curses._CursesWindow",
+    visible_options: List[tuple[OptionBase, int]],
+    selected_index: int,
+    scroll: int,
+    state: dict,
+    ui_state: dict,
+    status: str,
+    height: int,
+    width: int,
+) -> tuple[int | None, int | None]:
+    title_offset = 2
+    body_top = title_offset
+    status_y = max(0, height - 2)
+    instructions_y = max(0, height - 1)
+    body_height = max(0, status_y - body_top)
+    if body_height <= 0:
+        warning = "Not enough rows to render options. Increase terminal height."
+        stdscr.addnstr(body_top, 2, warning[: max(1, width - 4)], max(1, width - 4), curses.A_BOLD | curses.color_pair(2))
+        return (None, None)
+
+    available_width = width - 4
+    column_gap = 3
+    column_count = 2 if available_width >= 40 else 1
+    if column_count <= 1:
+        column_gap = 0
+    column_width = max(20, (available_width - column_gap * (column_count - 1)) // column_count)
+    x_positions = [2 + (column_width + column_gap) * idx for idx in range(column_count)]
+    y_positions = [body_top] * column_count
+
+    total_visible = len(visible_options)
+    start = max(0, min(scroll, max(0, total_visible - 1)))
+    first_rendered: int | None = None
+    last_rendered: int | None = None
+    first_render_row: int | None = None
+    last_render_row: int | None = None
+
+    idx = start
+    current_col = 0
+    while idx < total_visible:
+        opt, _ = visible_options[idx]
+        opt_height = max(1, opt.height(column_width, state))
+        placed = False
+        col = current_col
+        while col < column_count:
+            if y_positions[col] + opt_height <= body_top + body_height:
+                placed = True
                 break
-    elif right_y < status_y:
-        stdscr.addnstr(right_y, right_start, "Selected: (none)", wrap_width, curses.A_DIM)
+            col += 1
+        if not placed:
+            break
+        current_col = col
+        draw_y = y_positions[col]
+        draw_x = x_positions[col]
+        extra = opt.render(stdscr, draw_y, column_width, idx == selected_index, state)
+        if first_rendered is None:
+            first_rendered = idx
+            first_render_row = draw_y
+        last_rendered = idx
+        last_render_row = max(last_render_row or draw_y, draw_y + extra - 1)
+        y_positions[col] = draw_y + extra + 1
+        idx += 1
+
+    has_more_above = start > 0
+    has_more_below = last_rendered is not None and last_rendered < total_visible - 1
+    arrow_attr = curses.A_DIM | curses.A_BOLD
+    if has_more_above and first_render_row is not None:
+        stdscr.addnstr(max(body_top, first_render_row), 0, "↑", 1, arrow_attr)
+    if has_more_below and last_render_row is not None:
+        stdscr.addnstr(min(body_top + body_height - 1, last_render_row), 0, "↓", 1, arrow_attr)
+
+    selected_opt: OptionBase | None = None
+    if 0 <= selected_index < len(visible_options):
+        selected_opt = visible_options[selected_index][0]
+
+    focus_area = ui_state.get("focus_area", 0)
+    help_focus = focus_area == 1
+
+    help_start = body_top + body_height
+    if help_start < status_y:
+        available_rows = status_y - (help_start + 1)
+        header_text, visible_help, has_selection = prepare_help_panel(
+            selected_opt,
+            state,
+            max(10, width - 4),
+            available_rows,
+            ui_state,
+            height,
+        )
+        header_attr = curses.A_BOLD | (curses.A_REVERSE if help_focus else curses.A_DIM)
+        stdscr.hline(help_start, 1, curses.ACS_HLINE, width - 2)
+        heading_text = f" {STRINGS['help_heading']}: {header_text} "
+        stdscr.addnstr(help_start, 3, heading_text[: max(1, width - 6)], max(1, width - 6), header_attr)
+        row = help_start + 1
+        for line, attr in visible_help:
+            if row >= status_y:
+                break
+            line_attr = (attr or curses.A_DIM) | (curses.A_REVERSE if help_focus else 0)
+            stdscr.addnstr(row, 2, line[: max(1, width - 4)], max(1, width - 4), line_attr)
+            row += 1
+        if not has_selection:
+            ui_state["help_max_offset"] = 0
+            ui_state["help_visible_lines"] = 0
+    else:
+        ui_state["help_max_offset"] = 0
+        ui_state["help_visible_lines"] = 0
+        ui_state.setdefault("help_total_lines", 0)
+
+    if status and status_y >= 0:
+        stdscr.addnstr(status_y, 2, status[: max(1, width - 4)], max(1, width - 4), curses.color_pair(2) | curses.A_BOLD)
+    draw_logs(stdscr, ui_state, max(body_top, status_y - 3), width, height)
+    if instructions_y >= 0:
+        instructions = STRINGS["instructions"]
+        stdscr.addnstr(instructions_y, 2, instructions[: max(1, width - 4)], max(1, width - 4), curses.A_DIM)
 
     return (first_rendered, last_rendered)
 
@@ -1296,6 +1671,7 @@ def draw_screen(
     selected_index: int,
     scroll: int,
     state: dict,
+    ui_state: dict,
 ) -> tuple[int | None, int | None]:
     stdscr.erase()
     height, width = stdscr.getmaxyx()
@@ -1305,23 +1681,22 @@ def draw_screen(
         stdscr.refresh()
         return (None, None)
 
-    title = "loadmodel launcher"
+    title = STRINGS["title"]
     stdscr.addnstr(0, 2, title, max(10, width - 4), curses.A_BOLD)
 
     body_top = 2
-    instructions = "Arrows: navigate • Enter: edit/activate • PgUp/PgDn: scroll • q: quit"
+    instructions = STRINGS["instructions"]
     status = ensure_status(state)
     instructions_y = max(0, height - 1)
     status_y = max(0, instructions_y - 1)
-    wide_layout = width * 9 >= height * 12 and width >= 60
-
-    if wide_layout:
+    if width >= 140:
         first_rendered, last_rendered = _draw_wide_layout(
             stdscr,
             visible_options,
             selected_index,
             scroll,
             state,
+            ui_state,
             status,
             height,
             width,
@@ -1330,6 +1705,20 @@ def draw_screen(
             stdscr.addnstr(status_y, 2, status[: max(1, width - 4)], max(1, width - 4), curses.color_pair(2) | curses.A_BOLD)
         if instructions_y >= 0:
             stdscr.addnstr(instructions_y, 2, instructions[: max(1, width - 4)], max(1, width - 4), curses.A_DIM)
+        stdscr.refresh()
+        return (first_rendered, last_rendered)
+    if width >= 80:
+        first_rendered, last_rendered = _draw_tablet_layout(
+            stdscr,
+            visible_options,
+            selected_index,
+            scroll,
+            state,
+            ui_state,
+            status,
+            height,
+            width,
+        )
         stdscr.refresh()
         return (first_rendered, last_rendered)
 
@@ -1392,10 +1781,47 @@ def draw_screen(
     if has_more_below and last_render_row is not None:
         arrow_row = max(body_top, min(last_render_row, height - 1))
         stdscr.addnstr(arrow_row, 0, "↓", 1, arrow_attr)
+    selected_opt: OptionBase | None = None
+    if 0 <= selected_index < len(visible_options):
+        selected_opt = visible_options[selected_index][0]
+
+    focus_area = ui_state.get("focus_area", 0)
+    help_focus = focus_area == 1
+    help_start = max(y, body_top)
+    if help_start < status_y:
+        available_rows = status_y - (help_start + 1)
+        header_text, visible_help, has_selection = prepare_help_panel(
+            selected_opt,
+            state,
+            max(10, width - 4),
+            available_rows,
+            ui_state,
+            height,
+        )
+        header_attr = curses.A_BOLD | (curses.A_REVERSE if help_focus else curses.A_DIM)
+        stdscr.hline(help_start, 1, curses.ACS_HLINE, width - 2)
+        heading_text = f" {STRINGS['help_heading']}: {header_text} "
+        stdscr.addnstr(help_start, 3, heading_text[: max(1, width - 6)], max(1, width - 6), header_attr)
+        row = help_start + 1
+        for line, attr in visible_help:
+            if row >= status_y:
+                break
+            line_attr = (attr or curses.A_DIM) | (curses.A_REVERSE if help_focus else 0)
+            stdscr.addnstr(row, 2, line[: max(1, width - 4)], max(1, width - 4), line_attr)
+            row += 1
+        if not has_selection:
+            ui_state["help_max_offset"] = 0
+            ui_state["help_visible_lines"] = 0
+    else:
+        ui_state["help_max_offset"] = 0
+        ui_state["help_visible_lines"] = 0
+        ui_state.setdefault("help_total_lines", 0)
+
     if status and status_y >= 0:
         stdscr.addnstr(status_y, 2, status[: max(1, width - 4)], max(1, width - 4), curses.color_pair(2) | curses.A_BOLD)
     if instructions_y >= 0:
         stdscr.addnstr(instructions_y, 2, instructions[: max(1, width - 4)], max(1, width - 4), curses.A_DIM)
+    draw_logs(stdscr, ui_state, max(body_top, status_y - 3), width, height)
     stdscr.refresh()
     return (first_rendered, last_rendered)
 
@@ -1436,18 +1862,39 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
         "status": "",
     }
 
+    saved_values = load_saved_state()
+    if saved_values:
+        state.update(saved_values)
+
+    ui_state = {
+        "focus_area": 0,
+        "show_full_help": False,
+        "logs": deque(maxlen=LOG_HISTORY),
+        "status_message": None,
+        "help_offset": 0,
+        "logs_offset": 0,
+        "help_max_offset": 0,
+        "logs_max_offset": 0,
+        "help_visible_lines": 0,
+        "logs_visible_rows": 0,
+        "last_selected": None,
+    }
+
     gpu_infos = memory_utils.detect_gpus()
+    saved_has_strategy = bool(saved_values) and "gpu_strategy" in saved_values
     if not gpu_infos:
         state["gpu_strategy"] = "cpu"
         state["n_gpu_layers"] = "0"
-    elif len(gpu_infos) == 1:
+        append_log(ui_state, "CUDA GPU not detected; defaulting to CPU offload.")
+    elif len(gpu_infos) == 1 and not saved_has_strategy:
         state["gpu_strategy"] = "single"
-    else:
+    elif len(gpu_infos) > 1 and not saved_has_strategy:
         state["gpu_strategy"] = "balanced"
 
     _exit, initial_msg = refresh_local_models(state)
     if initial_msg:
         set_status(state, initial_msg)
+        append_log(ui_state, initial_msg)
 
     options = build_options(state)
     selected_index = 0
@@ -1463,7 +1910,7 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
             if not opt.visible(state):
                 continue
             try:
-                opt_height = max(0, opt.height(body_width, state))
+                opt_height = max(1, opt.height(body_width, state))
             except Exception:
                 opt_height = 1
             visible_opts.append(opt)
@@ -1476,11 +1923,21 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
             stdscr.refresh()
             key = stdscr.getch()
             if key in (ord("q"), ord("Q")):
+                save_state(options)
                 break
+            if key == 9:
+                ui_state["focus_area"] = (ui_state.get("focus_area", 0) + 1) % 3
             continue
 
         selected_index = max(0, min(selected_index, len(visible_opts) - 1))
         scroll = max(0, min(scroll, max(0, len(visible_opts) - 1)))
+
+        if ui_state.get("last_selected") != selected_index:
+            ui_state["help_offset"] = 0
+            ui_state["last_selected"] = selected_index
+
+        if ui_state.get("status_message") is not None:
+            set_status(state, ui_state["status_message"])
 
         first_rendered, last_rendered = draw_screen(
             stdscr,
@@ -1488,7 +1945,9 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
             selected_index,
             scroll,
             state,
+            ui_state,
         )
+        ui_state["status_message"] = None
 
         if first_rendered is not None and selected_index < first_rendered:
             scroll = selected_index
@@ -1502,26 +1961,121 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
 
         key = stdscr.getch()
         if key in (ord("q"), ord("Q")):
+            save_state(options)
             break
-        if key in (curses.KEY_PPAGE,):
-            scroll = max(0, scroll - max(1, len(visible_opts) // 2))
+        if key in (curses.KEY_RESIZE,):
             continue
-        if key in (curses.KEY_NPAGE,):
-            scroll = min(len(visible_opts) - 1, scroll + max(1, len(visible_opts) // 2))
+        if key == 9:
+            ui_state["focus_area"] = (ui_state.get("focus_area", 0) + 1) % 3
             continue
-        if key in (curses.KEY_UP, ord("k")):
-            selected_index = (selected_index - 1) % len(visible_opts)
+        if key == ord("?"):
+            ui_state["show_full_help"] = not ui_state.get("show_full_help", False)
+            ui_state["help_offset"] = 0
+            append_log(ui_state, "Expanded help" if ui_state["show_full_help"] else "Collapsed help")
             continue
-        if key in (curses.KEY_DOWN, ord("j")):
-            selected_index = (selected_index + 1) % len(visible_opts)
+
+        focus_area = ui_state.get("focus_area", 0)
+
+        if focus_area == 0:
+            if key in (curses.KEY_DOWN, ord("j")):
+                selected_index = (selected_index + 1) % len(visible_opts)
+                continue
+            if key in (curses.KEY_UP, ord("k")):
+                selected_index = (selected_index - 1) % len(visible_opts)
+                continue
+            if key in (curses.KEY_PPAGE,):
+                scroll = max(0, scroll - max(1, len(visible_opts) // 2))
+                continue
+            if key in (curses.KEY_NPAGE,):
+                scroll = min(len(visible_opts) - 1, scroll + max(1, len(visible_opts) // 2))
+                continue
+
+            exit_requested, message = visible_opts[selected_index].handle_key(key, state, stdscr)
+            if message:
+                set_status(state, message)
+                append_log(ui_state, message)
+            else:
+                set_status(state, "")
+            if exit_requested:
+                save_state(options)
+                break
             continue
-        exit_requested, message = visible_opts[selected_index].handle_key(key, state, stdscr)
-        if message:
-            set_status(state, message)
-        else:
-            set_status(state, "")
-        if exit_requested:
-            break
+
+        if focus_area == 1:
+            if key in (curses.KEY_DOWN, ord("j")):
+                ui_state["help_offset"] = min(
+                    ui_state.get("help_max_offset", 0),
+                    ui_state.get("help_offset", 0) + 1,
+                )
+                continue
+            if key in (curses.KEY_UP, ord("k")):
+                ui_state["help_offset"] = max(0, ui_state.get("help_offset", 0) - 1)
+                continue
+            if key in (curses.KEY_NPAGE,):
+                step = max(1, ui_state.get("help_visible_lines", 1))
+                ui_state["help_offset"] = min(
+                    ui_state.get("help_max_offset", 0),
+                    ui_state.get("help_offset", 0) + step,
+                )
+                continue
+            if key in (curses.KEY_PPAGE,):
+                step = max(1, ui_state.get("help_visible_lines", 1))
+                ui_state["help_offset"] = max(0, ui_state.get("help_offset", 0) - step)
+                continue
+            if key in (curses.KEY_HOME,):
+                ui_state["help_offset"] = 0
+                continue
+            if key in (curses.KEY_END,):
+                ui_state["help_offset"] = ui_state.get("help_max_offset", 0)
+                continue
+            if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+                exit_requested, message = visible_opts[selected_index].handle_key(key, state, stdscr)
+                if message:
+                    set_status(state, message)
+                    append_log(ui_state, message)
+                if exit_requested:
+                    save_state(options)
+                    break
+            continue
+
+        if focus_area == 2:
+            if key in (curses.KEY_DOWN, ord("j")):
+                ui_state["logs_offset"] = min(
+                    ui_state.get("logs_max_offset", 0),
+                    ui_state.get("logs_offset", 0) + 1,
+                )
+                continue
+            if key in (curses.KEY_UP, ord("k")):
+                ui_state["logs_offset"] = max(0, ui_state.get("logs_offset", 0) - 1)
+                continue
+            if key in (curses.KEY_NPAGE,):
+                step = max(1, ui_state.get("logs_visible_rows", 1))
+                ui_state["logs_offset"] = min(
+                    ui_state.get("logs_max_offset", 0),
+                    ui_state.get("logs_offset", 0) + step,
+                )
+                continue
+            if key in (curses.KEY_PPAGE,):
+                step = max(1, ui_state.get("logs_visible_rows", 1))
+                ui_state["logs_offset"] = max(0, ui_state.get("logs_offset", 0) - step)
+                continue
+            if key in (curses.KEY_HOME,):
+                ui_state["logs_offset"] = ui_state.get("logs_max_offset", 0)
+                continue
+            if key in (curses.KEY_END,):
+                ui_state["logs_offset"] = 0
+                continue
+            if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+                exit_requested, message = visible_opts[selected_index].handle_key(key, state, stdscr)
+                if message:
+                    set_status(state, message)
+                    append_log(ui_state, message)
+                if exit_requested:
+                    save_state(options)
+                    break
+            continue
+
+    save_state(options)
 
 
 def main() -> None:
