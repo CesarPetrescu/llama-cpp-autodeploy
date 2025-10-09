@@ -17,10 +17,10 @@ package manager commands below.
 - Automated build with CUDA, MMQ kernels and optional Intel oneAPI MKL
 - Multi-GPU support via tensor splitting
 - Interactive TUIs:
-- `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
-- `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
-- `loadmodel_dist_cli.py` for orchestrating distributed RPC inference with network auto-discovery on port 5515
-- `rpc_server_cli.py` for launching standalone rpc-server instances with custom ports and device bindings
+  - `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
+  - `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
+  - `loadmodel_dist_cli.py` for orchestrating distributed RPC inference with network auto-discovery on port 5515
+  - `rpc_server_cli.py` for launching standalone rpc-server instances with custom ports and device bindings
 - Sample launch scripts for Qwen models in `run/`
 
 ## Interactive CLIs
@@ -31,6 +31,34 @@ Two text user interfaces are included for day-to-day workflows:
 - `loadmodel_cli.py` lets you browse local GGUFs or remote Hugging Face models, tune runtime flags, and preview GPU/CPU memory usage with live scrollable charts.
 
 Launch either script with `python <script_name>` inside the virtual environment. Use the arrow keys to navigate, `PgUp/PgDn` to scroll long lists, and the on-screen instructions for editing values.
+
+### Example: Distributed Setup Across Two PCs
+
+Assume **PC A** will run the main `llama-cli` process and **PC B** will host a worker. Both machines need to build llama.cpp with the distributed RPC backend (`Enable distributed RPC backend` in `autodevops_cli.py`).
+
+1. **On PC B (worker node)**
+   ```bash
+   cd /path/to/llama-cpp-autodeploy
+   source venv/bin/activate
+   python rpc_server_cli.py --host 0.0.0.0 --port 5515 --devices 0 --cache /tmp/llama-cache
+   ```
+   Leave this process running; it listens for RPC requests on the chosen port.
+
+2. **On PC A (controller)**
+   ```bash
+   cd /path/to/llama-cpp-autodeploy
+   source venv/bin/activate
+   python loadmodel_dist_cli.py
+   ```
+   - Select the models directory (defaults to `./models`) and pick a GGUF file.
+   - On startup the launcher scans local subnets for rpc-servers on port 5515; use “Scan network for rpc-server” if the worker was started later.
+   - Ensure the discovered host (e.g. `192.168.1.20:5515`) appears in “Worker hosts” or add it manually.
+   - Optionally enable “Launch local rpc-server” to run an additional worker on PC A.
+   - Choose “Launch distributed llama-cli” to start inference; the tool runs `./bin/llama-cli -m <model> --rpc <hosts>` automatically.
+
+3. **Verification**
+   - Watch PC B’s terminal for incoming rpc-server logs.
+   - On PC A, the status line reports discovery/connection results; rerun the launcher to change prompts or host lists at any time.
 
 ## Requirements
 
