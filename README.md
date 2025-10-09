@@ -19,8 +19,10 @@ package manager commands below.
 - Interactive TUIs:
   - `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
   - `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
-  - `loadmodel_dist_cli.py` for orchestrating distributed RPC inference with network auto-discovery on port 5515
-  - `rpc_server_cli.py` for launching standalone rpc-server instances with custom ports and device bindings
+- `loadmodel_dist_cli.py` for orchestrating distributed RPC inference with network auto-discovery on port 5515
+- `rpc_server_cli.py` for launching standalone rpc-server instances with custom ports and device bindings
+
+> The distributed workflow relies on llama.cpp’s RPC backend, which implements tensor/model parallelism over TCP. The main `llama-cli` process delegates tensor shards to one or more `rpc-server` workers, each running on a separate machine and returning partial results in parallel.
 - Sample launch scripts for Qwen models in `run/`
 
 ## Interactive CLIs

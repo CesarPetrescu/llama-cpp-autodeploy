@@ -590,16 +590,25 @@ def action_launch(state: dict) -> Tuple[bool, Optional[str]]:
     except (FileNotFoundError, ValueError) as exc:
         return False, str(exc)
 
+    curses.def_prog_mode()
     curses.endwin()
     if messages:
         for msg in messages:
             print(msg, flush=True)
     print("Launching distributed llama-cli:\n  " + shell_join(cmd), flush=True)
     try:
-        subprocess.call(cmd)
+        exit_code = subprocess.call(cmd)
     except KeyboardInterrupt:
-        pass
-    return True, None
+        exit_code = 130
+    finally:
+        curses.reset_prog_mode()
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        curses.doupdate()
+    msg = "llama-cli exited" if exit_code == 0 else f"llama-cli exited with code {exit_code}"
+    return False, msg
 
 
 def action_start_worker(state: dict) -> Tuple[bool, Optional[str]]:
@@ -893,7 +902,7 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
         "model_path": "",
         "rpc_hosts": "",
         "ctx_size": "",
-        "n_gpu_layers": "",
+        "n_gpu_layers": "999",
         "batch_size": "",
         "tensor_cache": "",
         "prompt_file": "",
