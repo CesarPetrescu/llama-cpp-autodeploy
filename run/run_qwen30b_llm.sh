@@ -5,6 +5,12 @@ source venv/bin/activate
 
 # Qwen3-30B A3B Thinking (Unsloth) – llama.cpp server
 # Listens on 0.0.0.0:45540 so LiteLLM (on another host) can reach it.
+N_CPU_MOE=${N_CPU_MOE:-10}  # Offload experts for the first N MoE layers to CPU (tune based on VRAM)
+EXTRA_FLAGS=(--threads 32)
+if [[ -n "${N_CPU_MOE}" ]]; then
+  EXTRA_FLAGS+=(--n-cpu-moe "${N_CPU_MOE}")
+fi
+
 CUDA_VISIBLE_DEVICES=0,1 \
 exec python loadmodel.py --llm unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q5_K_XL \
   --host 0.0.0.0 \
@@ -12,4 +18,4 @@ exec python loadmodel.py --llm unsloth/Qwen3-30B-A3B-Thinking-2507-GGUF:Q5_K_XL 
   --n-gpu-layers 999 \
   --tensor-split 50,50 \
   --ctx-size 16384 \
-  --extra --threads 32
+  --extra "${EXTRA_FLAGS[@]}"

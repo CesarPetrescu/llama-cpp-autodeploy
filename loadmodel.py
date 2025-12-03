@@ -73,6 +73,24 @@ def detect_ubatch_flag() -> Tuple[Optional[str], Optional[str]]:
     secondary = "--n-ubatch" if primary == "--ubatch" else ("--ubatch" if primary == "--n-ubatch" else None)
     return (primary, secondary)
 
+
+def ensure_moe_flags_available(want_moe: bool) -> None:
+    """Fail fast if the llama-server build is too old to understand MoE offload flags."""
+    if not want_moe:
+        return
+    if not LLAMA_SERVER.exists():
+        die(
+            "llama-server not found. Rebuild llama.cpp (e.g., `python autodevops.py --ref latest --now`) "
+            "to enable Mixture-of-Experts offloading."
+        )
+
+    help_out = run_capture([str(LLAMA_SERVER), "--help"])
+    if "--cpu-moe" not in help_out and "--n-cpu-moe" not in help_out:
+        die(
+            "This llama-server build does not recognize --cpu-moe/--n-cpu-moe. "
+            "Rebuild llama.cpp with a recent commit (e.g., `python autodevops.py --ref latest --now`)."
+        )
+
 def parse_ollama_ref(spec: str) -> Tuple[str, Optional[str]]:
     # org/repo[:quant_or_filename]
     if ":" in spec:
@@ -261,6 +279,7 @@ def launch_llama_server_with_backoff(
     cpu_moe: bool,
 ) -> subprocess.Popen:
     """Start llama.cpp. If it fails (e.g., CUDA OOM), retry with fewer GPU layers so the rest stays on CPU RAM."""
+    ensure_moe_flags_available(cpu_moe or (n_cpu_moe is not None and n_cpu_moe > 0))
     ngl_try = n_gpu_layers if (n_gpu_layers is not None and n_gpu_layers >= 0) else 999
     attempt = 0
     while True:
