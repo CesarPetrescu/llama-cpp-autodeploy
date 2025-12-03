@@ -194,6 +194,8 @@ def launch_llama_server(
     n_gpu_layers: Optional[int],
     tensor_split: Optional[str],
     ctx_size: Optional[int],
+    n_cpu_moe: Optional[int],
+    cpu_moe: bool,
 ) -> subprocess.Popen:
     cmd = [
         str(LLAMA_SERVER), "--model", str(model_path),
@@ -205,6 +207,10 @@ def launch_llama_server(
         cmd += ["--tensor-split", tensor_split]
     if ctx_size:
         cmd += ["--ctx-size", str(ctx_size)]
+    if cpu_moe:
+        cmd.append("--cpu-moe")
+    elif n_cpu_moe is not None and n_cpu_moe > 0:
+        cmd += ["--n-cpu-moe", str(n_cpu_moe)]
     if extra:
         # map --ubatch <-> --n-ubatch to what your llama-server supports
         primary, _secondary = detect_ubatch_flag()
@@ -251,6 +257,8 @@ def launch_llama_server_with_backoff(
     n_gpu_layers: Optional[int],
     tensor_split: Optional[str],
     ctx_size: Optional[int],
+    n_cpu_moe: Optional[int],
+    cpu_moe: bool,
 ) -> subprocess.Popen:
     """Start llama.cpp. If it fails (e.g., CUDA OOM), retry with fewer GPU layers so the rest stays on CPU RAM."""
     ngl_try = n_gpu_layers if (n_gpu_layers is not None and n_gpu_layers >= 0) else 999
@@ -258,7 +266,17 @@ def launch_llama_server_with_backoff(
     while True:
         attempt += 1
         info(f"[llama][try {attempt}] --n-gpu-layers={ngl_try}")
-        proc = launch_llama_server(model_path, host, port, extra, ngl_try, tensor_split, ctx_size)
+        proc = launch_llama_server(
+            model_path,
+            host,
+            port,
+            extra,
+            ngl_try,
+            tensor_split,
+            ctx_size,
+            n_cpu_moe,
+            cpu_moe,
+        )
         if _wait_for_listen(host, port, timeout=90.0):
             return proc
         # process did not start listening; back off
@@ -595,6 +613,8 @@ For --rerank (Transformers):
     p.add_argument("--n-gpu-layers", type=int, default=999)
     p.add_argument("--tensor-split", default=None, help='e.g. "50,50" for 2 GPUs')
     p.add_argument("--ctx-size", type=int, default=None)
+    p.add_argument("--n-cpu-moe", type=int, default=None, help="Offload experts for the first N layers to CPU (Mixture-of-Experts models)")
+    p.add_argument("--cpu-moe", action="store_true", help="Offload all experts to CPU (Mixture-of-Experts models)")
 
     # Transformers reranker runtime
     p.add_argument("--device", default=None, help="cuda|cpu (single device only if device_map!=auto)")
@@ -643,6 +663,8 @@ For --rerank (Transformers):
         n_gpu_layers=args.n_gpu_layers,
         tensor_split=args.tensor_split,
         ctx_size=args.ctx_size,
+        n_cpu_moe=args.n_cpu_moe,
+        cpu_moe=args.cpu_moe,
     )
     try:
         proc.wait()

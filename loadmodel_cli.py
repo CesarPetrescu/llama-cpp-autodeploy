@@ -854,6 +854,12 @@ def build_command(state: dict) -> List[str]:
         if ctx_size:
             ctx_int = parse_int(ctx_size, name="--ctx-size")
             cmd += ["--ctx-size", str(ctx_int)]
+        if state.get("cpu_moe"):
+            cmd.append("--cpu-moe")
+        else:
+            n_cpu_moe = (state.get("n_cpu_moe") or "").strip()
+            if n_cpu_moe:
+                cmd += ["--n-cpu-moe", str(parse_int(n_cpu_moe, name="--n-cpu-moe"))]
     else:
         device = (state.get("device") or "").strip()
         if device:
@@ -1170,6 +1176,28 @@ def build_options(state: dict) -> List[OptionBase]:
             placeholder="4096",
             on_change=on_numeric_change,
             visible=lambda st: st.get("mode") in {"llm", "embed"},
+        )
+    )
+
+    options.append(
+        ToggleOption(
+            key="cpu_moe",
+            name="--cpu-moe",
+            description="Offload all Mixture-of-Experts layers to CPU (llama.cpp). Overrides --n-cpu-moe when enabled.",
+            state=state,
+            visible=lambda st: st.get("mode") in {"llm", "embed"},
+        )
+    )
+
+    options.append(
+        InputOption(
+            key="n_cpu_moe",
+            name="--n-cpu-moe",
+            description="Number of initial MoE layers whose experts should be offloaded to CPU. Leave blank to keep experts on GPU.",
+            state=state,
+            placeholder="",
+            on_change=on_numeric_change,
+            visible=lambda st: st.get("mode") in {"llm", "embed"} and not st.get("cpu_moe"),
         )
     )
 
