@@ -332,7 +332,7 @@ def main(args):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Automated llama.cpp build (CUDA + BLAS).")
     p.add_argument("--now", action="store_true", help="build immediately")
-    p.add_argument("--ref", default="b6119", help="git tag/branch/commit, or 'latest'")
+    p.add_argument("--ref", default="latest", help="git tag/branch/commit, or 'latest'")
     p.add_argument("--fast-math", action="store_true", help="pass --use_fast_math to NVCC")
     p.add_argument("--force-mmq", choices=["auto","on","off"], default="auto", help="toggle MMQ CUDA kernels")
     p.add_argument("--blas", choices=["auto","openblas","mkl","off"], default="auto", help="choose BLAS for CPU path")

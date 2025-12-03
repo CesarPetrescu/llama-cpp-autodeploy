@@ -16,6 +16,7 @@ package manager commands below.
 
 - Automated build with CUDA, MMQ kernels and optional Intel oneAPI MKL
 - Multi-GPU support via tensor splitting
+- Mixture-of-Experts offloading flags (`--cpu-moe`, `--n-cpu-moe`) when built against recent llama.cpp
 - Interactive TUIs with responsive layouts, persistent settings, scrollable help/log panes, and Tab-based focus control:
   - `autodevops_cli.py` for guided llama.cpp builds with hardware-aware presets
   - `loadmodel_cli.py` for launching LLM, embedding, and reranker servers with live memory planning
@@ -24,6 +25,30 @@ package manager commands below.
 
 > The distributed workflow relies on llama.cpp’s RPC backend, which implements tensor/model parallelism over TCP. The main `llama-cli` process delegates tensor shards to one or more `rpc-server` workers, each running on a separate machine and returning partial results in parallel.
 - Sample launch scripts for Qwen models in `run/`
+
+## Mixture-of-Experts offloading (Qwen-30B and similar)
+
+MoE offloading landed in llama.cpp in August 2025. Rebuild your binaries to a recent
+commit or release so `llama-server` understands `--cpu-moe`/`--n-cpu-moe`:
+
+```bash
+source venv/bin/activate
+python autodevops.py --ref latest --now
+./bin/llama-server --help | grep -E "--cpu-moe|--n-cpu-moe"
+```
+
+These flags keep dense layers on GPU (respecting `--n-gpu-layers`) while placing MoE
+expert weights for the first N layers in CPU RAM. Start with `--cpu-moe` (or a high
+`--n-cpu-moe`) to guarantee the model fits, then dial the number down until VRAM usage
+is comfortable. The included `run/run_qwen30b_llm.sh` script now exposes an `N_CPU_MOE`
+environment override and defaults to offloading the first 10 layers’ experts:
+
+```bash
+N_CPU_MOE=12 ./run/run_qwen30b_llm.sh
+```
+
+If you pass MoE flags to `loadmodel.py`/`loadmodel_cli.py` but your binary predates this
+feature, the launcher will fail fast with a rebuild hint.
 
 ## Interactive CLIs
 
