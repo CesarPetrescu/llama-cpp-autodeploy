@@ -54,19 +54,31 @@ def die(msg: str, code: int = 1) -> None:
     sys.exit(code)
 
 def run_capture(cmd: List[str], env: Optional[dict] = None) -> str:
+    cmd_str = " ".join(shlex.quote(str(x)) for x in cmd)
     try:
         out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, env=env)
         return out
     except subprocess.CalledProcessError as e:
-        return e.output or ""
-    except Exception:
-        return ""
+        output = e.output or ""
+        msg = f"Command failed with exit code {e.returncode}: {cmd_str}"
+        if output:
+            msg += f"\nOutput:\n{output}"
+        raise RuntimeError(msg) from e
+    except Exception as e:
+        raise RuntimeError(f"Failed to run command: {cmd_str}\nError: {e}") from e
 
 def detect_ubatch_flag() -> Tuple[Optional[str], Optional[str]]:
     """Return ('--ubatch' or '--n-ubatch' if supported, None otherwise, and the alternate synonym)."""
     if not LLAMA_SERVER.exists():
         return (None, None)
-    help_out = run_capture([str(LLAMA_SERVER), "--help"])
+    try:
+        help_out = run_capture([str(LLAMA_SERVER), "--help"])
+    except Exception as e:
+        print(
+            f"[WARN] Failed to detect ubatch flags via `llama-server --help`: {e}",
+            file=sys.stderr,
+        )
+        return (None, None)
     have_ubatch = "--ubatch" in help_out
     have_nubatch = "--n-ubatch" in help_out
     primary = "--ubatch" if have_ubatch else ("--n-ubatch" if have_nubatch else None)
@@ -84,7 +96,14 @@ def ensure_moe_flags_available(want_moe: bool) -> None:
             "to enable Mixture-of-Experts offloading."
         )
 
-    help_out = run_capture([str(LLAMA_SERVER), "--help"])
+    try:
+        help_out = run_capture([str(LLAMA_SERVER), "--help"])
+    except Exception as e:
+        die(
+            "Failed to inspect llama-server for MoE support via `--help`. "
+            "Ensure llama-server is executable and rebuilt if necessary. "
+            f"Details: {e}"
+        )
     if "--cpu-moe" not in help_out and "--n-cpu-moe" not in help_out:
         die(
             "This llama-server build does not recognize --cpu-moe/--n-cpu-moe. "
