@@ -253,6 +253,7 @@ python autodevops_cli.py
 
 # 3b) Or run the build directly with CLI flags
 #     Use --blas mkl if oneAPI MKL is installed, otherwise use --blas openblas or omit the flag for auto-detect.
+#     Add --cpu-only to bypass NVIDIA driver checks when you are intentionally running CPU-only.
 python autodevops.py --now --fast-math --force-mmq=on --blas mkl
 
 # 4) Optional: set OpenMP/MKL threading for Intel hybrid CPUs
@@ -306,6 +307,14 @@ can press the arrow keys to highlight a field and understand what enabling it wi
 When you exit the wizard the planned build recipe is printed back to the terminal, including
 per-backend instructions and runtime suggestions. Builds are only kicked off automatically
 when **Build immediately** remains checked.
+
+### CPU-only mode
+
+Pass `--cpu-only` to `autodevops.py` to bypass the `nvidia-smi` check on systems where GPU
+execution is not desired. The script will emit a warning and continue, but GPU offload
+remains unavailable unless NVIDIA drivers and hardware are present. CUDA builds may still
+fail later if the CUDA toolkit or drivers are missing; `--cpu-only` only skips the initial
+driver detection step.
 
 ### Running tests
 
