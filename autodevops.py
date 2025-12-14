@@ -47,7 +47,7 @@ def package_hint(missing: list[str]) -> str:
     return ""
 
 
-def check_dependencies():
+def check_dependencies(require_gpu: bool = True):
     missing = [d for d in ["git","cmake","make","gcc","g++","pkg-config"] if shutil.which(d) is None]
     if missing:
         hint = package_hint(missing)
@@ -55,8 +55,19 @@ def check_dependencies():
         if hint:
             msg += f"\n{hint}"
         raise SystemExit(msg)
-    if shutil.which("nvidia-smi") is None:
-        raise SystemExit("NVIDIA drivers not found (nvidia-smi missing)")
+    nvidia_smi = shutil.which("nvidia-smi")
+    if require_gpu:
+        if nvidia_smi is None:
+            raise SystemExit("NVIDIA drivers not found (nvidia-smi missing)")
+    else:
+        warning = (
+            "GPU dependency checks skipped: continuing without verifying NVIDIA drivers. "
+            "CUDA builds and GPU offload will be unavailable unless drivers and hardware are present."
+        )
+        if nvidia_smi is None:
+            log(warning)
+        else:
+            log("Warning: GPU dependency checks bypassed by flag; ensure drivers are healthy before enabling CUDA builds.")
 
 def get_latest_release_tag():
     with urlopen(API_URL) as resp:
@@ -312,9 +323,11 @@ def schedule_build(version: str, enable_rpc: bool):
         log("'at' command not available; build will run on next invocation")
 
 def main(args):
-    check_dependencies()
+    check_dependencies(require_gpu=not args.cpu_only)
     ref = get_ref(args.ref)
     log(f"Target llama.cpp ref: {ref}")
+    if args.cpu_only:
+        log("CPU-only mode requested; skipping NVIDIA driver checks. CUDA builds will fail without a working GPU stack.")
     if args.now:
         build_llama(ref, args.force_mmq, args.fast_math, args.blas, args.distributed)
         log("Build completed successfully" if test_build() else "Build failed")
@@ -337,5 +350,6 @@ if __name__ == "__main__":
     p.add_argument("--force-mmq", choices=["auto","on","off"], default="auto", help="toggle MMQ CUDA kernels")
     p.add_argument("--blas", choices=["auto","openblas","mkl","off"], default="auto", help="choose BLAS for CPU path")
     p.add_argument("--distributed", action="store_true", help="enable GGML RPC backend for distributed inference")
+    p.add_argument("--cpu-only", action="store_true", help="skip NVIDIA driver checks when GPU execution is not needed")
     args = p.parse_args()
     main(args)
