@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import curses
-import curses.textpad
 import json
 import os
 import shlex
@@ -18,6 +17,7 @@ from typing import Callable, Iterable, List, Optional
 
 import loadmodel
 import memory_utils
+import tui_utils
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -25,7 +25,7 @@ LOADMODEL_SCRIPT = SCRIPT_DIR / "loadmodel.py"
 
 STRINGS = {
     "title": "loadmodel launcher",
-    "instructions": "Arrows: navigate • Enter: edit/activate • PgUp/PgDn: scroll • Tab: cycle panes • ?: toggle help • q: quit",
+    "instructions": "Arrows: navigate • Enter: edit/activate • PgUp/PgDn: scroll • Tab: cycle panes • ?: toggle help • c: compact • q: quit",
     "logs_heading": "Logs",
     "help_heading": "Help",
 }
@@ -308,11 +308,17 @@ class ChoiceOption(OptionBase):
         state: dict,
     ) -> int:
         self._compute_choices()
+        compact = bool(state.get("_ui_compact", False))
         attr = curses.A_REVERSE if selected else curses.A_NORMAL
         current = self._choices[self._index]
         marker = "*" if self.is_modified(state) else " "
         label = f"{marker}{self.icon} {self.name}: {current.label}"
+        if not current.enabled and current.reason:
+            attr |= curses.color_pair(2)
+            label = f"{label} ⚠"
         win.addnstr(y, 2, label, max(10, width - 4), attr)
+        if compact:
+            return 1
         summary = self.get_summary(max(0, width - len(label) - 6))
         if summary:
             win.addnstr(y, min(width - 2, 2 + len(label) + 1), f" · {summary}", max(10, width - len(label) - 4), curses.A_DIM)
@@ -334,6 +340,8 @@ class ChoiceOption(OptionBase):
 
     def height(self, width: int, state: dict) -> int:
         self._compute_choices()
+        if bool(state.get("_ui_compact", False)):
+            return 1
         base = 1
         wrap_width = max(10, width - 6)
         base += len(textwrap.wrap(self.description, wrap_width))
@@ -382,31 +390,19 @@ class InputOption(OptionBase):
         state.setdefault(key, self.default_value)
 
     def edit(self, stdscr: "curses._CursesWindow") -> None:
-        h, w = stdscr.getmaxyx()
-        prompt = f"Enter {self.name}: "
-        width = max(20, min(60, w - len(prompt) - 4))
-        start_x = max(1, (w - (len(prompt) + width + 2)) // 2)
-        start_y = max(1, h // 2 - 1)
-        win = curses.newwin(3, len(prompt) + width + 2, start_y, start_x)
-        win.border()
-        win.addstr(1, 1, prompt)
-        edit_win = win.derwin(1, width, 1, len(prompt) + 1)
-        edit_win.erase()
         current = str(self._state.get(self.key, ""))
-        if current:
-            edit_win.addstr(0, 0, current)
-        curses.curs_set(1)
-        textpad = curses.textpad.Textbox(edit_win)
-        win.refresh()
-        try:
-            new_value = textpad.edit().strip()
-        except Exception:
-            new_value = current
-        curses.curs_set(0)
-        if new_value != current:
-            self._state[self.key] = new_value
+        result = tui_utils.edit_line_dialog(
+            stdscr,
+            title=f"Edit {self.name}",
+            initial=current,
+            allow_empty=True,
+        )
+        if not result.accepted:
+            return
+        if result.value != current:
+            self._state[self.key] = result.value
             if self._on_change is not None:
-                self._on_change(self._state, new_value)
+                self._on_change(self._state, result.value)
 
     def handle_key(
         self,
@@ -426,12 +422,15 @@ class InputOption(OptionBase):
         selected: bool,
         state: dict,
     ) -> int:
+        compact = bool(state.get("_ui_compact", False))
         attr = curses.A_REVERSE if selected else curses.A_NORMAL
         value = str(self._state.get(self.key, "")).strip()
         display = value or self.placeholder
         marker = "*" if self.is_modified(state) else " "
         label = f"{marker}{self.icon} {self.name}: {display}"
         win.addnstr(y, 2, label, max(10, width - 4), attr)
+        if compact:
+            return 1
         summary = self.get_summary(max(0, width - len(label) - 6))
         if summary:
             win.addnstr(y, min(width - 2, 2 + len(label) + 1), f" · {summary}", max(10, width - len(label) - 4), curses.A_DIM)
@@ -443,6 +442,8 @@ class InputOption(OptionBase):
         return line_count
 
     def height(self, width: int, state: dict) -> int:
+        if bool(state.get("_ui_compact", False)):
+            return 1
         wrap_width = max(10, width - 6)
         return 1 + len(textwrap.wrap(self.description, wrap_width))
 
@@ -498,11 +499,14 @@ class ToggleOption(OptionBase):
         selected: bool,
         state: dict,
     ) -> int:
+        compact = bool(state.get("_ui_compact", False))
         attr = curses.A_REVERSE if selected else curses.A_NORMAL
         mark = "✔" if self._state.get(self.key) else "✖"
         marker = "*" if self.is_modified(state) else " "
         label = f"{marker}{self.icon} [{mark}] {self.name}"
         win.addnstr(y, 2, label, max(10, width - 4), attr)
+        if compact:
+            return 1
         summary = self.get_summary(max(0, width - len(label) - 6))
         if summary:
             win.addnstr(y, min(width - 2, 2 + len(label) + 1), f" · {summary}", max(10, width - len(label) - 4), curses.A_DIM)
@@ -514,6 +518,8 @@ class ToggleOption(OptionBase):
         return line_count
 
     def height(self, width: int, state: dict) -> int:
+        if bool(state.get("_ui_compact", False)):
+            return 1
         wrap_width = max(10, width - 6)
         return 1 + len(textwrap.wrap(self.description, wrap_width))
 
@@ -560,9 +566,12 @@ class ActionOption(OptionBase):
         selected: bool,
         state: dict,
     ) -> int:
+        compact = bool(state.get("_ui_compact", False))
         attr = curses.A_REVERSE if selected else curses.A_BOLD
         label = f"▶ {self.name}"
         win.addnstr(y, 2, label, max(10, width - 4), attr)
+        if compact:
+            return 1
         line_count = 1
         wrap_width = max(10, width - 6)
         for line in textwrap.wrap(self.description, wrap_width):
@@ -571,6 +580,8 @@ class ActionOption(OptionBase):
         return line_count
 
     def height(self, width: int, state: dict) -> int:
+        if bool(state.get("_ui_compact", False)):
+            return 1
         wrap_width = max(10, width - 6)
         return 1 + len(textwrap.wrap(self.description, wrap_width))
 
@@ -591,6 +602,10 @@ class ModelSummaryOption(OptionBase):
         selected: bool,
         state: dict,
     ) -> int:
+        if bool(state.get("_ui_compact", False)) and not selected:
+            attr = curses.A_REVERSE if selected else curses.A_BOLD
+            win.addnstr(y, 2, "Model overview", max(10, width - 4), attr)
+            return 1
         profile = memory_utils.estimate_memory_profile(self._state)
         attr = curses.A_REVERSE if selected else curses.A_BOLD
         win.addnstr(y, 2, "Model overview", max(10, width - 4), attr)
@@ -603,6 +618,8 @@ class ModelSummaryOption(OptionBase):
         return line_count
 
     def height(self, width: int, state: dict) -> int:
+        if bool(state.get("_ui_compact", False)) and state.get("_ui_selected_key") != self.key:
+            return 1
         profile = memory_utils.estimate_memory_profile(self._state)
         wrap_width = max(10, width - 6)
         lines = 1
@@ -676,6 +693,10 @@ class MemoryVisualizerOption(OptionBase):
         selected: bool,
         state: dict,
     ) -> int:
+        if bool(state.get("_ui_compact", False)) and not selected:
+            attr = curses.A_REVERSE if selected else curses.A_BOLD
+            win.addnstr(y, 2, "Memory planner", max(10, width - 4), attr)
+            return 1
         profile = memory_utils.estimate_memory_profile(self._state)
         attr = curses.A_REVERSE if selected else curses.A_BOLD
         win.addnstr(y, 2, "Memory planner", max(10, width - 4), attr)
@@ -733,6 +754,8 @@ class MemoryVisualizerOption(OptionBase):
         return line_count
 
     def height(self, width: int, state: dict) -> int:
+        if bool(state.get("_ui_compact", False)) and state.get("_ui_selected_key") != self.key:
+            return 1
         profile = memory_utils.estimate_memory_profile(self._state)
         lines = 2  # title + legend
         if profile.gpus:
@@ -849,6 +872,9 @@ def build_command(state: dict) -> List[str]:
         cmd += ["--n-gpu-layers", str(n_gpu)]
         tensor_split = (state.get("tensor_split") or "").strip()
         if tensor_split:
+            kind, _ratios, err = memory_utils.parse_tensor_split(tensor_split)
+            if kind == "invalid":
+                raise ValueError(err or "Invalid --tensor-split value.")
             cmd += ["--tensor-split", tensor_split]
         ctx_size = (state.get("ctx_size") or "").strip()
         if ctx_size:
@@ -946,6 +972,21 @@ def on_numeric_change(state: dict, _new: str) -> None:
     mark_profile_dirty(state)
 
 
+def on_tensor_split_change(state: dict, new: str) -> None:
+    mark_profile_dirty(state)
+    raw = str(new or "").strip()
+    if not raw:
+        return
+    kind, ratios, err = memory_utils.parse_tensor_split(raw)
+    if kind == "invalid":
+        set_status(state, err)
+        return
+    if kind == "ratios" and ratios:
+        gpus = memory_utils.detect_gpus()
+        if gpus and len(gpus) > 1 and len(ratios) != len(gpus):
+            set_status(state, f"Note: detected {len(gpus)} GPU(s) but tensor split has {len(ratios)} value(s).")
+
+
 def on_model_source_change(state: dict, choice: ChoiceItem) -> None:
     mark_profile_dirty(state)
     if choice.value == "remote":
@@ -965,7 +1006,14 @@ def build_gpu_strategy_choices(state: dict) -> List[ChoiceItem]:
     gpu_missing_reason = "CUDA GPU not detected"
     items = [
         ChoiceItem("balanced", "Even split across GPUs", enabled=count > 1, reason=None if count > 1 else "Requires ≥2 GPUs"),
+        ChoiceItem(
+            "vram",
+            "Split by detected VRAM",
+            enabled=count > 1,
+            reason=None if count > 1 else "Requires ≥2 GPUs",
+        ),
         ChoiceItem("priority", "Prioritise GPU 0", enabled=count > 1, reason=None if count > 1 else "Requires ≥2 GPUs"),
+        ChoiceItem("auto", "Auto split (llama.cpp)", enabled=count > 1, reason=None if count > 1 else "Requires ≥2 GPUs"),
         ChoiceItem("single", "Single GPU", enabled=count >= 1, reason=None if count >= 1 else gpu_missing_reason),
         ChoiceItem("cpu", "Offload to system RAM", enabled=True),
     ]
@@ -995,6 +1043,10 @@ def apply_gpu_strategy(state: dict, choice: ChoiceItem) -> None:
         state["tensor_split"] = ""
         state["n_gpu_layers"] = "999"
         return
+    if strategy == "auto":
+        state["tensor_split"] = "auto"
+        state["n_gpu_layers"] = "999"
+        return
     if strategy == "priority":
         primary = 60
         parts = [primary]
@@ -1006,6 +1058,21 @@ def apply_gpu_strategy(state: dict, choice: ChoiceItem) -> None:
             if idx < remaining - base * others:
                 share += 1
             parts.append(share)
+    elif strategy == "vram":
+        totals = [float(gpu.total) if gpu.total and gpu.total > 0 else 1.0 for gpu in gpus]
+        denom = sum(totals)
+        if denom <= 0:
+            base = 100 // count
+            parts = [base for _ in range(count)]
+            for idx in range(100 - base * count):
+                parts[idx % count] += 1
+        else:
+            raw = [(total / denom) * 100.0 for total in totals]
+            parts = [int(x) for x in raw]
+            remainder = 100 - sum(parts)
+            order = sorted(((raw[i] - parts[i], i) for i in range(count)), reverse=True)
+            for offset in range(remainder):
+                parts[order[offset % count][1]] += 1
     else:  # balanced
         base = 100 // count
         parts = [base for _ in range(count)]
@@ -1159,10 +1226,10 @@ def build_options(state: dict) -> List[OptionBase]:
         InputOption(
             key="tensor_split",
             name="--tensor-split",
-            description="Comma-separated split for multiple GPUs (e.g. 50,50).",
+            description="Comma-separated ratios for multiple GPUs (e.g. 0.6,0.4 or 60,40). Use 'auto' to let llama.cpp decide.",
             state=state,
             placeholder="",
-            on_change=on_numeric_change,
+            on_change=on_tensor_split_change,
             visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
@@ -1356,7 +1423,24 @@ def _option_detail_lines(opt: OptionBase, state: dict) -> List[tuple[str, int]]:
         value = str(state.get(opt.key, "")).strip()
         lines.append(("", 0))
         lines.append((f"Current: {value or '(blank)'}", curses.A_DIM))
-        lines.append(("Enter: edit value", curses.A_DIM))
+        if opt.key == "tensor_split" and value:
+            kind, ratios, err = memory_utils.parse_tensor_split(value)
+            if kind == "ratios" and ratios:
+                denom = sum(ratios) or 1.0
+                percents = [(r / denom) * 100.0 for r in ratios]
+                gpus = memory_utils.detect_gpus()
+                if gpus and len(gpus) == len(percents):
+                    lines.append(("Normalised split:", curses.A_DIM))
+                    for idx, pct in enumerate(percents):
+                        lines.append((f"GPU{idx}: {pct:.1f}% ({gpus[idx].name})", curses.A_DIM))
+                else:
+                    joined = ", ".join(f"{pct:.1f}%" for pct in percents)
+                    lines.append((f"Normalised: {joined}", curses.A_DIM))
+            elif kind == "auto":
+                lines.append(("Mode: auto (estimated from VRAM)", curses.A_DIM))
+            elif kind == "invalid" and err:
+                lines.append((f"⚠ {err}", curses.A_DIM))
+        lines.append(("Enter: edit (Enter saves, Esc cancels)", curses.A_DIM))
     elif isinstance(opt, ToggleOption):
         enabled = bool(state.get(opt.key))
         lines.append(("", 0))
@@ -1897,6 +1981,7 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
     ui_state = {
         "focus_area": 0,
         "show_full_help": False,
+        "compact": True,
         "logs": deque(maxlen=LOG_HISTORY),
         "status_message": None,
         "help_offset": 0,
@@ -1932,19 +2017,10 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
         height, width = stdscr.getmaxyx()
         body_width = max(10, width - 4)
 
-        visible_opts: List[OptionBase] = []
+        visible_opts: List[OptionBase] = [opt for opt in options if opt.visible(state)]
         visible_entries: List[tuple[OptionBase, int]] = []
-        for opt in options:
-            if not opt.visible(state):
-                continue
-            try:
-                opt_height = max(1, opt.height(body_width, state))
-            except Exception:
-                opt_height = 1
-            visible_opts.append(opt)
-            visible_entries.append((opt, opt_height))
 
-        if not visible_entries:
+        if not visible_opts:
             stdscr.erase()
             stdscr.addnstr(0, 0, "No options available.", max(10, width - 4), curses.A_BOLD | curses.color_pair(2))
             stdscr.addnstr(1, 0, "Press 'q' to quit.", max(10, width - 4), curses.A_DIM)
@@ -1959,6 +2035,16 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
 
         selected_index = max(0, min(selected_index, len(visible_opts) - 1))
         scroll = max(0, min(scroll, max(0, len(visible_opts) - 1)))
+
+        state["_ui_compact"] = bool(ui_state.get("compact", True))
+        state["_ui_selected_key"] = getattr(visible_opts[selected_index], "key", "")
+
+        for opt in visible_opts:
+            try:
+                opt_height = max(1, opt.height(body_width, state))
+            except Exception:
+                opt_height = 1
+            visible_entries.append((opt, opt_height))
 
         if ui_state.get("last_selected") != selected_index:
             ui_state["help_offset"] = 0
@@ -2000,6 +2086,11 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
             ui_state["show_full_help"] = not ui_state.get("show_full_help", False)
             ui_state["help_offset"] = 0
             append_log(ui_state, "Expanded help" if ui_state["show_full_help"] else "Collapsed help")
+            continue
+        if key in (ord("c"), ord("C")):
+            ui_state["compact"] = not ui_state.get("compact", True)
+            ui_state["help_offset"] = 0
+            append_log(ui_state, "Compact list enabled" if ui_state["compact"] else "Compact list disabled")
             continue
 
         focus_area = ui_state.get("focus_area", 0)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import curses
-import curses.textpad
 import ipaddress
 import json
 import os
@@ -21,6 +20,7 @@ import socket
 from concurrent.futures import ThreadPoolExecutor
 
 from collections import deque
+import tui_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BIN_DIR = SCRIPT_DIR / "bin"
@@ -165,7 +165,7 @@ def _option_detail_lines(opt: "OptionBase", state: dict) -> List[tuple[str, int]
         value = str(state.get(opt.key, "")).strip()
         lines.append(("", 0))
         lines.append((f"Current: {value or '(blank)'}", curses.A_DIM))
-        lines.append(("Enter: edit value", curses.A_DIM))
+        lines.append(("Enter: edit (Enter saves, Esc cancels)", curses.A_DIM))
     elif isinstance(opt, ToggleOption):
         enabled = bool(state.get(opt.key))
         lines.append(("", 0))
@@ -328,31 +328,19 @@ class InputOption(OptionBase):
         self.default_value = None
 
     def _edit(self, stdscr: "curses._CursesWindow", state: dict) -> None:
-        h, w = stdscr.getmaxyx()
-        prompt = f"Enter {self.name}: "
-        width = max(20, min(60, w - len(prompt) - 4))
-        start_x = max(1, (w - (len(prompt) + width + 2)) // 2)
-        start_y = max(1, h // 2 - 1)
-        win = curses.newwin(3, len(prompt) + width + 2, start_y, start_x)
-        win.border()
-        win.addstr(1, 1, prompt)
-        edit_win = win.derwin(1, width, 1, len(prompt) + 1)
-        edit_win.erase()
         current = str(state.get(self.key, "")).strip()
-        if current:
-            edit_win.addnstr(0, 0, current, width - 1)
-        curses.curs_set(1)
-        textpad = curses.textpad.Textbox(edit_win)
-        win.refresh()
-        try:
-            new_value = textpad.edit().strip()
-        except Exception:
-            new_value = current
-        curses.curs_set(0)
-        if new_value != current:
-            state[self.key] = new_value
+        result = tui_utils.edit_line_dialog(
+            stdscr,
+            title=f"Edit {self.name}",
+            initial=current,
+            allow_empty=True,
+        )
+        if not result.accepted:
+            return
+        if result.value != current:
+            state[self.key] = result.value
             if self._on_change is not None:
-                self._on_change(state, new_value)
+                self._on_change(state, result.value)
 
     def handle_key(
         self,
