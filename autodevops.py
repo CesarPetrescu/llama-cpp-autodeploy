@@ -90,13 +90,22 @@ def is_new_version(version: str) -> bool:
 def get_compute_capability_str() -> str:
     try:
         out = subprocess.check_output(
-            ["nvidia-smi","--query-gpu=compute_cap","--format=csv,noheader,nounits"],
-            text=True
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
+            text=True,
         ).strip().splitlines()
-        return out[0].replace('.','')  # e.g. "89"
+        caps: list[str] = []
+        for line in out:
+            cap = line.strip().replace(".", "")
+            if not cap or not cap.isdigit():
+                continue
+            if cap not in caps:
+                caps.append(cap)
+        if caps:
+            return ";".join(caps)
     except Exception:
-        log("Could not determine GPU compute capability, using default 75")
-        return "75"
+        pass
+    log("Could not determine GPU compute capability, using default 75")
+    return "75"
 
 def _is_cuda_home(path: Path) -> bool:
     return (path / "bin" / "nvcc").exists()
@@ -223,7 +232,8 @@ def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str, e
 
     # GPU arch
     arch = get_compute_capability_str()
-    arch_i = int(re.sub(r'[^0-9]','', arch) or "75")
+    arch_values = [int(x) for x in re.split(r"[;,\s]+", arch) if x.isdigit()]
+    arch_i = max(arch_values) if arch_values else 75
     log(f"Using CUDA at: {cuda_home} (nvcc {nvcc_ver[0]}.{nvcc_ver[1]})" if nvcc_ver else f"Using CUDA at: {cuda_home}")
 
     # BLAS selection
