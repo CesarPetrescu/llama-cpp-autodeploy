@@ -1754,7 +1754,11 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
 
 
 def main() -> None:
-    curses.wrapper(run_tui)
+    try:
+        curses.wrapper(run_tui)
+    except curses.error as exc:
+        if "endwin" not in str(exc):
+            raise
 
 
 if __name__ == "__main__":

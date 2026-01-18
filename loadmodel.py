@@ -33,6 +33,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import memory_utils
+
 # Optional deps:
 try:
     from huggingface_hub import list_repo_files, hf_hub_download
@@ -649,7 +651,7 @@ For --rerank (Transformers):
 
     # llama-server runtime
     p.add_argument("--n-gpu-layers", type=int, default=999)
-    p.add_argument("--tensor-split", default=None, help='e.g. "50,50" for 2 GPUs')
+    p.add_argument("--tensor-split", default=None, help='e.g. "50,50" for 2 GPUs (use "auto" for VRAM split)')
     p.add_argument("--ctx-size", type=int, default=None)
     p.add_argument("--n-cpu-moe", type=int, default=None, help="Offload experts for the first N layers to CPU (Mixture-of-Experts models)")
     p.add_argument("--cpu-moe", action="store_true", help="Offload all experts to CPU (Mixture-of-Experts models)")
@@ -693,13 +695,21 @@ For --rerank (Transformers):
     if args.embed:
         extra = ["--embeddings"] + extra
 
+    tensor_split = args.tensor_split
+    if tensor_split:
+        kind, _ratios, err = memory_utils.parse_tensor_split(tensor_split)
+        if kind == "invalid":
+            die(err or "Invalid --tensor-split value.")
+        if kind == "auto":
+            tensor_split = memory_utils.auto_tensor_split()
+
     proc = launch_llama_server_with_backoff(
         model_path=gguf_path,
         host=args.host,
         port=args.port,
         extra=extra,
         n_gpu_layers=args.n_gpu_layers,
-        tensor_split=args.tensor_split,
+        tensor_split=tensor_split,
         ctx_size=args.ctx_size,
         n_cpu_moe=args.n_cpu_moe,
         cpu_moe=args.cpu_moe,

@@ -875,7 +875,12 @@ def build_command(state: dict) -> List[str]:
             kind, _ratios, err = memory_utils.parse_tensor_split(tensor_split)
             if kind == "invalid":
                 raise ValueError(err or "Invalid --tensor-split value.")
-            cmd += ["--tensor-split", tensor_split]
+            if kind == "auto":
+                resolved = memory_utils.auto_tensor_split()
+                if resolved:
+                    cmd += ["--tensor-split", resolved]
+            else:
+                cmd += ["--tensor-split", tensor_split]
         ctx_size = (state.get("ctx_size") or "").strip()
         if ctx_size:
             ctx_int = parse_int(ctx_size, name="--ctx-size")
@@ -933,12 +938,20 @@ def action_launch(state: dict) -> tuple[bool, str | None]:
     except ValueError as exc:
         return False, str(exc)
 
+    curses.def_prog_mode()
     curses.endwin()
     print("Launching loadmodel:\n  " + shell_join(cmd), flush=True)
     try:
         subprocess.call(cmd)
     except KeyboardInterrupt:
         pass
+    finally:
+        try:
+            curses.reset_prog_mode()
+            curses.curs_set(0)
+            curses.doupdate()
+        except curses.error:
+            pass
     return True, None
 
 
@@ -1005,15 +1018,15 @@ def build_gpu_strategy_choices(state: dict) -> List[ChoiceItem]:
     count = len(gpus)
     gpu_missing_reason = "CUDA GPU not detected"
     items = [
-        ChoiceItem("balanced", "Even split across GPUs", enabled=count > 1, reason=None if count > 1 else "Requires ≥2 GPUs"),
+        ChoiceItem("balanced", "Even split across GPUs", enabled=count > 1, reason=None if count > 1 else "Requires >=2 GPUs"),
         ChoiceItem(
             "vram",
             "Split by detected VRAM",
             enabled=count > 1,
-            reason=None if count > 1 else "Requires ≥2 GPUs",
+            reason=None if count > 1 else "Requires >=2 GPUs",
         ),
-        ChoiceItem("priority", "Prioritise GPU 0", enabled=count > 1, reason=None if count > 1 else "Requires ≥2 GPUs"),
-        ChoiceItem("auto", "Auto split (llama.cpp)", enabled=count > 1, reason=None if count > 1 else "Requires ≥2 GPUs"),
+        ChoiceItem("priority", "Prioritise GPU 0", enabled=count > 1, reason=None if count > 1 else "Requires >=2 GPUs"),
+        ChoiceItem("auto", "Auto split (VRAM)", enabled=count > 1, reason=None if count > 1 else "Requires >=2 GPUs"),
         ChoiceItem("single", "Single GPU", enabled=count >= 1, reason=None if count >= 1 else gpu_missing_reason),
         ChoiceItem("cpu", "Offload to system RAM", enabled=True),
     ]
@@ -1226,7 +1239,7 @@ def build_options(state: dict) -> List[OptionBase]:
         InputOption(
             key="tensor_split",
             name="--tensor-split",
-            description="Comma-separated ratios for multiple GPUs (e.g. 0.6,0.4 or 60,40). Use 'auto' to let llama.cpp decide.",
+            description="Comma-separated ratios for multiple GPUs (e.g. 0.6,0.4 or 60,40). Use 'auto' to split by detected VRAM.",
             state=state,
             placeholder="",
             on_change=on_tensor_split_change,
@@ -2198,7 +2211,11 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
 
 
 def main() -> None:
-    curses.wrapper(run_tui)
+    try:
+        curses.wrapper(run_tui)
+    except curses.error as exc:
+        if "endwin" not in str(exc):
+            raise
 
 
 if __name__ == "__main__":

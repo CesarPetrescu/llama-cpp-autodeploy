@@ -289,6 +289,32 @@ def parse_tensor_split(value: str | None) -> tuple[str, Optional[List[float]], O
     return ("ratios", ratios, None)
 
 
+def auto_tensor_split(gpus: Optional[List[GPUInfo]] = None) -> Optional[str]:
+    """Return a comma-separated split string based on detected VRAM, or None if not applicable."""
+    if gpus is None:
+        gpus = detect_gpus()
+    if not gpus or len(gpus) < 2:
+        return None
+    totals = [float(gpu.total or 1.0) for gpu in gpus]
+    denom = sum(totals)
+    if denom <= 0:
+        base = 100 // len(gpus)
+        parts = [base for _ in range(len(gpus))]
+        for idx in range(100 - base * len(gpus)):
+            parts[idx % len(gpus)] += 1
+    else:
+        raw = [(total / denom) * 100.0 for total in totals]
+        parts = [int(x) for x in raw]
+        remainder = 100 - sum(parts)
+        order = sorted(((raw[i] - parts[i], i) for i in range(len(gpus))), reverse=True)
+        for offset in range(remainder):
+            parts[order[offset % len(gpus)][1]] += 1
+    total = sum(parts)
+    if total != 100 and total > 0:
+        parts[-1] += 100 - total
+    return ",".join(str(max(p, 0)) for p in parts)
+
+
 def _distribute_by_ratios(total: int, ratios: List[float], count: int) -> List[int]:
     if count <= 0:
         return []
