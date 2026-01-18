@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import curses
-import curses.textpad
 import json
 import locale
 import platform
@@ -18,6 +17,7 @@ from pathlib import Path
 from typing import Callable, List, Sequence, Set
 
 import autodevops
+import tui_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 AUTO_SCRIPT = SCRIPT_DIR / "autodevops.py"
@@ -29,7 +29,7 @@ locale.setlocale(locale.LC_ALL, "")
 
 STRINGS = {
     "title": "llama.cpp AutodevOps Builder",
-    "instructions": "Arrows: navigate • Space: toggle/cycle • Enter: edit/apply • PgUp/PgDn: scroll • Tab: cycle panes • ?: toggle help • Q: quit",
+    "instructions": "Arrows: navigate • Space: toggle/cycle • Enter: edit/apply • PgUp/PgDn: scroll • Tab: cycle panes • ?: toggle help • c: compact • Q: quit",
     "logs_heading": "Logs",
     "help_heading": "Help",
     "no_space_warning": "Not enough space to render menu. Enlarge the window.",
@@ -163,6 +163,7 @@ class SystemInfo:
 
 SHOW_UNAVAILABLE = False
 SHOW_HARDWARE_BADGES = True
+COMPACT_LIST = True
 
 
 def set_show_unavailable(value: bool) -> None:
@@ -181,6 +182,15 @@ def set_show_hardware_badges(value: bool) -> None:
 
 def hardware_badges_enabled() -> bool:
     return SHOW_HARDWARE_BADGES
+
+
+def set_compact_list(value: bool) -> None:
+    global COMPACT_LIST
+    COMPACT_LIST = bool(value)
+
+
+def compact_list_enabled() -> bool:
+    return COMPACT_LIST
 
 
 class OptionBase:
@@ -264,6 +274,8 @@ class ToggleOption(OptionBase):
         marker = "*" if self.is_modified() else " "
         label = f"{marker}[TGL] {'[x]' if self.value else '[ ]'} {self.name}"
         win.addnstr(y, 2, label, max(10, width - 4), attr)
+        if compact_list_enabled():
+            return 1
         summary = self.get_summary(max(0, width - len(label) - 6))
         if summary:
             win.addnstr(y, min(width - 2, 2 + len(label) + 1), f" · {summary}", max(10, width - len(label) - 4), curses.A_DIM)
@@ -282,6 +294,8 @@ class ToggleOption(OptionBase):
         return line_count
 
     def height(self, width: int) -> int:
+        if compact_list_enabled():
+            return 1
         wrap_width = max(10, width - 6)
         base = 1 + len(textwrap.wrap(self.description, wrap_width))
         if self.disabled and self.reason:
@@ -356,6 +370,8 @@ class ChoiceOption(OptionBase):
         marker = "*" if self.is_modified() else " "
         label = f"{marker}[SEL] {self.name}: {current.label}"
         win.addnstr(y, 2, label, max(10, width - 4), attr)
+        if compact_list_enabled():
+            return 1
         summary = self.get_summary(max(0, width - len(label) - 6))
         if summary:
             win.addnstr(y, min(width - 2, 2 + len(label) + 1), f" · {summary}", max(10, width - len(label) - 4), curses.A_DIM)
@@ -390,6 +406,8 @@ class ChoiceOption(OptionBase):
         return line_count
 
     def height(self, width: int) -> int:
+        if compact_list_enabled():
+            return 1
         wrap_width = max(10, width - 6)
         base = 1 + len(textwrap.wrap(self.description, wrap_width))
         current = self.choices[self.index]
@@ -440,28 +458,14 @@ class InputOption(OptionBase):
         self.default_value = value
 
     def edit(self, stdscr: "curses._CursesWindow") -> None:
-        h, w = stdscr.getmaxyx()
-        prompt = f"Enter {self.name}: "
-        width = max(20, min(60, w - len(prompt) - 4))
-        start_x = max(1, (w - (len(prompt) + width + 2)) // 2)
-        start_y = max(1, h // 2 - 1)
-        win = curses.newwin(3, len(prompt) + width + 2, start_y, start_x)
-        win.border()
-        win.addstr(1, 1, prompt)
-        edit_win = win.derwin(1, width, 1, len(prompt) + 1)
-        edit_win.erase()
-        if self.value:
-            edit_win.addstr(0, 0, self.value)
-        curses.curs_set(1)
-        textpad = curses.textpad.Textbox(edit_win)
-        win.refresh()
-        try:
-            new_value = textpad.edit().strip()
-        except Exception:
-            new_value = self.value
-        curses.curs_set(0)
-        if new_value:
-            self.value = new_value
+        result = tui_utils.edit_line_dialog(
+            stdscr,
+            title=f"Edit {self.name}",
+            initial=self.value,
+            allow_empty=True,
+        )
+        if result.accepted:
+            self.value = result.value
 
     def handle_key(self, key: int, stdscr: "curses._CursesWindow" | None = None) -> None:
         if key in (curses.KEY_ENTER, ord("\n"), ord("\r")) and stdscr is not None:
@@ -473,6 +477,8 @@ class InputOption(OptionBase):
         display = self.value or self.placeholder
         label = f"{marker}[TXT] {self.name}: {display}"
         win.addnstr(y, 2, label, max(10, width - 4), attr)
+        if compact_list_enabled():
+            return 1
         summary = self.get_summary(max(0, width - len(label) - 6))
         if summary:
             win.addnstr(y, min(width - 2, 2 + len(label) + 1), f" · {summary}", max(10, width - len(label) - 4), curses.A_DIM)
@@ -484,6 +490,8 @@ class InputOption(OptionBase):
         return line_count
 
     def height(self, width: int) -> int:
+        if compact_list_enabled():
+            return 1
         wrap_width = max(10, width - 6)
         return 1 + len(textwrap.wrap(self.description, wrap_width))
 
@@ -530,6 +538,8 @@ class InfoBadgeOption(OptionBase):
         attr = curses.A_REVERSE if selected else curses.A_DIM
         label = f"{self.icon} {self.name}"
         win.addnstr(y, 2, label, max(10, width - 4), attr)
+        if compact_list_enabled():
+            return 1
         line_count = 1
         wrap_width = max(10, width - 6)
         for line in textwrap.wrap(self.description, wrap_width):
@@ -543,6 +553,8 @@ class InfoBadgeOption(OptionBase):
     def height(self, width: int) -> int:
         if not self._visible():
             return 0
+        if compact_list_enabled():
+            return 1
         wrap_width = max(10, width - 6)
         return 1 + len(textwrap.wrap(self.description, wrap_width))
 
@@ -1677,6 +1689,10 @@ def run_wizard(stdscr: "curses._CursesWindow") -> dict | None:
             ui_state["show_full_help"] = not ui_state.get("show_full_help", False)
             ui_state["help_offset"] = 0
             append_log(ui_state, "Expanded help" if ui_state["show_full_help"] else "Collapsed help")
+            continue
+        if key in (ord("c"), ord("C")):
+            set_compact_list(not compact_list_enabled())
+            append_log(ui_state, "Compact list enabled" if compact_list_enabled() else "Compact list disabled")
             continue
 
         focus_area = ui_state.get("focus_area", 0)

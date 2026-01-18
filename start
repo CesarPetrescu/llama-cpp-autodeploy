@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+PY="$SCRIPT_DIR/venv/bin/python"
+if [[ ! -x "$PY" ]]; then
+  echo "[ERROR] Expected venv python at: $PY" >&2
+  echo "Create it with:" >&2
+  echo "  python3 -m venv venv" >&2
+  echo "  ./venv/bin/pip install -r requirements.txt" >&2
+  exit 1
+fi
+
+run_autodevops_cli() {
+  "$PY" -m py_compile "$SCRIPT_DIR/tui_utils.py" "$SCRIPT_DIR/autodevops.py" "$SCRIPT_DIR/autodevops_cli.py"
+  exec "$PY" "$SCRIPT_DIR/autodevops_cli.py"
+}
+
+run_loadmodel_cli() {
+  "$PY" -m py_compile "$SCRIPT_DIR/tui_utils.py" "$SCRIPT_DIR/memory_utils.py" "$SCRIPT_DIR/loadmodel.py" "$SCRIPT_DIR/loadmodel_cli.py"
+  exec "$PY" "$SCRIPT_DIR/loadmodel_cli.py"
+}
+
+cmd="${1:-}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$cmd" in
+  autodevops|build|builder)
+    run_autodevops_cli
+    ;;
+  loadmodel|model|launcher)
+    run_loadmodel_cli
+    ;;
+  "" )
+    echo "Select tool:"
+    echo "  1) AutodevOps builder (build llama.cpp)"
+    echo "  2) Loadmodel launcher (run llama-server / reranker)"
+    echo "  q) Quit"
+    echo -n "> "
+    read -r choice || exit 0
+    case "${choice,,}" in
+      1|a|autodevops|build|builder)
+        run_autodevops_cli
+        ;;
+      2|l|loadmodel|model|launcher)
+        run_loadmodel_cli
+        ;;
+      q|quit|exit)
+        exit 0
+        ;;
+      *)
+        echo "[ERROR] Unknown choice: $choice" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  -h|--help|help)
+    cat <<'EOF'
+Usage:
+  ./start                # interactive chooser
+  ./start autodevops      # run AutodevOps builder TUI
+  ./start loadmodel       # run Loadmodel launcher TUI
+EOF
+    ;;
+  *)
+    echo "[ERROR] Unknown command: $cmd" >&2
+    echo "Try: ./start --help" >&2
+    exit 2
+    ;;
+esac
+

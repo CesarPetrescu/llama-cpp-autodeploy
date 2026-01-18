@@ -242,6 +242,82 @@ def _distribute(total: int, count: int, strategy: str) -> List[int]:
     return parts
 
 
+def parse_tensor_split(value: str | None) -> tuple[str, Optional[List[float]], Optional[str]]:
+    """Parse a llama.cpp --tensor-split string.
+
+    Returns (kind, ratios, error):
+      - kind="none": empty/unspecified
+      - kind="auto": literal "auto"
+      - kind="ratios": ratios is a list of floats (not normalised)
+      - kind="invalid": error is a human-friendly message
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ("none", None, None)
+    if raw.lower() == "auto":
+        return ("auto", None, None)
+
+    if "," in raw or ";" in raw:
+        tokens = [t.strip() for t in raw.replace(";", ",").split(",") if t.strip()]
+    elif ":" in raw:
+        tokens = [t.strip() for t in raw.split(":") if t.strip()]
+    else:
+        tokens = [t.strip() for t in raw.split() if t.strip()]
+
+    if not tokens:
+        return ("invalid", None, "--tensor-split cannot be empty.")
+
+    ratios: List[float] = []
+    for token in tokens:
+        if token.endswith("%"):
+            token = token[:-1].strip()
+        try:
+            number = float(token)
+        except ValueError:
+            return (
+                "invalid",
+                None,
+                f"Invalid --tensor-split '{raw}'. Use e.g. '0.6,0.4', '60,40', or 'auto'.",
+            )
+        if number < 0:
+            return ("invalid", None, f"--tensor-split values must be >= 0 (got {token}).")
+        ratios.append(number)
+
+    if sum(ratios) <= 0:
+        return ("invalid", None, f"--tensor-split must contain at least one value > 0 (got '{raw}').")
+
+    return ("ratios", ratios, None)
+
+
+def _distribute_by_ratios(total: int, ratios: List[float], count: int) -> List[int]:
+    if count <= 0:
+        return []
+    if total <= 0:
+        return [0 for _ in range(count)]
+
+    weights = list(ratios[:count])
+    if len(weights) < count:
+        weights.extend([0.0 for _ in range(count - len(weights))])
+
+    denom = sum(weights)
+    if denom <= 0:
+        return _distribute(total, count, "balanced")
+
+    raw = [total * (w / denom) for w in weights]
+    parts = [int(x) for x in raw]
+    remainder = total - sum(parts)
+    if remainder > 0:
+        order = sorted(((raw[i] - parts[i], i) for i in range(count)), reverse=True)
+        for offset in range(remainder):
+            parts[order[offset % count][1]] += 1
+
+    diff = total - sum(parts)
+    if diff != 0 and parts:
+        parts[-1] += diff
+
+    return parts
+
+
 def _resolve_remote_size(model_ref: str, state: dict) -> Optional[int]:
     if not model_ref or ":" not in model_ref or not _HF_OK:
         return None
@@ -397,21 +473,46 @@ def estimate_memory_profile(state: dict, *, refresh: bool = False) -> MemoryProf
         warnings.append("Layer count unknown; treating --n-gpu-layers as full offload.")
         gpu_ratio = 1.0 if ngl_value > 0 else 0.0
 
-    strategy = state.get("gpu_strategy") or ("cpu" if not detect_gpus() else "single")
     gpus = detect_gpus()
+    strategy = state.get("gpu_strategy") or ("cpu" if not gpus else "single")
     if not gpus and strategy != "cpu" and gpu_ratio > 0:
         warnings.append("No CUDA GPUs detected; weights will remain on system RAM.")
         gpu_ratio = 0.0
     weights_gpu = int(weights_total * gpu_ratio)
     weights_cpu = max(weights_total - weights_gpu, 0)
+    kv_gpu = int(kv_total * gpu_ratio) if kv_total > 0 else 0
+    kv_cpu = max(kv_total - kv_gpu, 0)
 
     if strategy == "cpu" or not gpus:
         weights_gpu = 0
         weights_cpu = weights_total
+        kv_gpu = 0
+        kv_cpu = kv_total
     weights_gpu = min(weights_gpu, weights_total)
+    kv_gpu = min(kv_gpu, kv_total)
 
-    distribution = _distribute(weights_gpu, len(gpus), strategy)
-    kv_distribution = _distribute(kv_total if gpus else 0, len(gpus), "balanced")
+    split_raw = str(state.get("tensor_split") or "").strip()
+    split_kind, split_ratios, split_err = parse_tensor_split(split_raw)
+    if split_kind == "invalid" and split_err:
+        warnings.append(split_err)
+        split_kind = "none"
+
+    ratio_weights: Optional[List[float]] = None
+    if split_kind == "auto" and gpus:
+        ratio_weights = [float(gpu.total or 1) for gpu in gpus]
+    elif split_kind == "ratios" and split_ratios:
+        ratio_weights = split_ratios
+
+    if ratio_weights is not None and gpus and strategy != "cpu":
+        if len(ratio_weights) != len(gpus):
+            warnings.append(
+                f"--tensor-split has {len(ratio_weights)} value(s) but {len(gpus)} GPU(s) detected; estimates may be off."
+            )
+        distribution = _distribute_by_ratios(weights_gpu, ratio_weights, len(gpus))
+        kv_distribution = _distribute_by_ratios(kv_gpu, ratio_weights, len(gpus))
+    else:
+        distribution = _distribute(weights_gpu, len(gpus), strategy)
+        kv_distribution = _distribute(kv_gpu, len(gpus), strategy)
     gpu_usages: List[GPUUsage] = []
     for idx, gpu in enumerate(gpus):
         weights_share = distribution[idx] if idx < len(distribution) else 0
@@ -419,7 +520,7 @@ def estimate_memory_profile(state: dict, *, refresh: bool = False) -> MemoryProf
         gpu_usages.append(GPUUsage(info=gpu, weights=weights_share, kv=kv_share))
 
     cpu_total, cpu_available = _detect_system_memory()
-    cpu_kv = 0 if gpus and strategy != "cpu" else kv_total
+    cpu_kv = kv_cpu
     cpu_usage_profile = MemoryProfile(
         source_label="Local" if source == "local" else "Remote",
         model_label=model_label,
@@ -464,7 +565,13 @@ def profile_summary_lines(profile: MemoryProfile) -> List[str]:
         )
     if profile.kv_total:
         ctx_desc = profile.ctx_size or "auto"
-        lines.append(f"KV cache @ ctx {ctx_desc}: {format_bytes(profile.kv_total)}")
+        kv_gpu = sum(gpu.kv for gpu in profile.gpus)
+        if kv_gpu or profile.cpu_kv:
+            lines.append(
+                f"KV cache @ ctx {ctx_desc}: {format_bytes(profile.kv_total)} → GPU {format_bytes(kv_gpu)} / CPU {format_bytes(profile.cpu_kv)}"
+            )
+        else:
+            lines.append(f"KV cache @ ctx {ctx_desc}: {format_bytes(profile.kv_total)}")
     return lines
 
 

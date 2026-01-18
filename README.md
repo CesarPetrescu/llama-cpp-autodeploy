@@ -66,7 +66,11 @@ Shared UX features:
 - **Contextual help**: press `?` to toggle between condensed and full help text. Entries show inline badges (`[SEL]`, `[TGL]`, `[TXT]`, `[ACT]`) and an asterisk when deviating from defaults.
 - **Logs & status**: the bottom pane shows rolling logs (200 entry history). `loadmodel_dist_cli.py` logs discovery events, local rpc-server launches, and `llama-cli` exit codes so you can backtrack after an interrupted run.
 
-Launch any script with `python <script_name>` inside the virtual environment. Use the arrow keys to navigate, `PgUp/PgDn` to scroll long lists, and follow the on-screen status line for additional key hints.
+Launch any script with `python <script_name>` inside the virtual environment. A convenience launcher is also included (it always uses `./venv/bin/python`, no activation needed):
+
+- `./start` (choose AutodevOps builder or Loadmodel launcher)
+
+Use the arrow keys to navigate, `PgUp/PgDn` to scroll long lists, and follow the on-screen status line for additional key hints.
 
 ### Example: Distributed Setup Across Two PCs
 
