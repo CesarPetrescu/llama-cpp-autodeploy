@@ -459,6 +459,106 @@ class InputOption(OptionBase):
         self._state[self.key] = str(value)
 
 
+def _gpu_label(gpu: memory_utils.GPUInfo) -> str:
+    total = memory_utils.format_bytes(gpu.total)
+    free = memory_utils.format_bytes(gpu.free)
+    if gpu.free is None:
+        return f"GPU{gpu.index} {gpu.name} ({total} total)"
+    return f"GPU{gpu.index} {gpu.name} ({free} free / {total} total)"
+
+
+class DeviceSelectOption(InputOption):
+    def __init__(
+        self,
+        key: str,
+        name: str,
+        description: str,
+        state: dict,
+        *,
+        placeholder: str = "all GPUs",
+        on_change: Callable[[dict, str], None] | None = None,
+        visible: Callable[[dict], bool] | None = None,
+    ) -> None:
+        super().__init__(
+            key=key,
+            name=name,
+            description=description,
+            state=state,
+            placeholder=placeholder,
+            on_change=on_change,
+            visible=visible,
+        )
+        self.icon = "[GPU]"
+
+    def edit(self, stdscr: "curses._CursesWindow") -> None:
+        gpus = memory_utils.detect_gpus()
+        if not gpus:
+            set_status(self._state, "No CUDA GPUs detected.")
+            return
+        items = [_gpu_label(gpu) for gpu in gpus]
+        current = str(self._state.get(self.key, "")).strip()
+        indices, err = memory_utils.parse_device_list(current, gpus)
+        if err:
+            set_status(self._state, err)
+        index_map = {gpu.index: idx for idx, gpu in enumerate(gpus)}
+        if indices is None:
+            selected = list(range(len(gpus)))
+        else:
+            selected = [index_map[idx] for idx in indices if idx in index_map]
+        result = tui_utils.multi_select_dialog(
+            stdscr,
+            title=f"Select {self.name}",
+            items=items,
+            selected=selected,
+        )
+        if not result.accepted:
+            return
+        picked = [gpus[idx].index for idx in result.indices if 0 <= idx < len(gpus)]
+        if not picked:
+            value = "none"
+        elif len(picked) == len(gpus):
+            value = "all"
+        else:
+            value = ",".join(str(idx) for idx in picked)
+        if value != current:
+            self._state[self.key] = value
+            if self._on_change is not None:
+                self._on_change(self._state, value)
+
+    def render(
+        self,
+        win: "curses._CursesWindow",
+        y: int,
+        width: int,
+        selected: bool,
+        state: dict,
+    ) -> int:
+        compact = bool(state.get("_ui_compact", False))
+        attr = curses.A_REVERSE if selected else curses.A_NORMAL
+        gpus_all = memory_utils.detect_gpus()
+        display = format_gpu_selection(self._state.get(self.key, ""), gpus_all) if gpus_all else "cpu-only"
+        marker = "*" if self.is_modified(state) else " "
+        label = f"{marker}{self.icon} {self.name}: {display}"
+        win.addnstr(y, 2, label, max(10, width - 4), attr)
+        if compact:
+            return 1
+        summary = self.get_summary(max(0, width - len(label) - 6))
+        if summary:
+            win.addnstr(
+                y,
+                min(width - 2, 2 + len(label) + 1),
+                f" · {summary}",
+                max(10, width - len(label) - 4),
+                curses.A_DIM,
+            )
+        line_count = 1
+        wrap_width = max(10, width - 6)
+        for line in textwrap.wrap(self.description, wrap_width):
+            win.addnstr(y + line_count, 6, line, max(10, width - 8), curses.A_DIM)
+            line_count += 1
+        return line_count
+
+
 class ToggleOption(OptionBase):
     def __init__(
         self,
@@ -830,6 +930,24 @@ def parse_int(value: str | None, *, default: Optional[int] = None, name: str = "
         raise ValueError(f"{name} must be an integer") from exc
 
 
+def resolve_selected_gpus(state: dict) -> tuple[List[memory_utils.GPUInfo], Optional[str], Optional[List[int]]]:
+    gpus_all = memory_utils.detect_gpus()
+    return memory_utils.filter_gpus_by_selection(gpus_all, state.get("gpu_devices"))
+
+
+def format_gpu_selection(value: str | None, gpus: List[memory_utils.GPUInfo]) -> str:
+    if not gpus:
+        return "cpu-only"
+    indices, err = memory_utils.parse_device_list(value, gpus)
+    if err:
+        return "invalid"
+    if indices is None:
+        return "all"
+    if not indices:
+        return "cpu-only"
+    return ",".join(str(i) for i in indices)
+
+
 def split_extra_flags(value: str) -> List[str]:
     value = (value or "").strip()
     if not value:
@@ -870,13 +988,18 @@ def build_command(state: dict) -> List[str]:
     if mode in ("llm", "embed"):
         n_gpu = parse_int(state.get("n_gpu_layers"), default=999, name="--n-gpu-layers")
         cmd += ["--n-gpu-layers", str(n_gpu)]
+        split_mode = (state.get("split_mode") or "").strip()
+        if split_mode and split_mode != "default":
+            cmd += ["--split-mode", split_mode]
         tensor_split = (state.get("tensor_split") or "").strip()
         if tensor_split:
             kind, _ratios, err = memory_utils.parse_tensor_split(tensor_split)
             if kind == "invalid":
                 raise ValueError(err or "Invalid --tensor-split value.")
             if kind == "auto":
-                resolved = memory_utils.auto_tensor_split()
+                gpus, _sel_err, _indices = resolve_selected_gpus(state)
+                policy = str(state.get("auto_split_policy") or "vram")
+                resolved = memory_utils.auto_tensor_split(gpus, policy=policy)
                 if resolved:
                     cmd += ["--tensor-split", resolved]
             else:
@@ -932,17 +1055,36 @@ def shell_join(parts: Iterable[str]) -> str:
     return " ".join(shlex.quote(str(x)) for x in parts)
 
 
+def build_cuda_visible_devices(state: dict) -> tuple[Optional[str], Optional[str]]:
+    gpus_all = memory_utils.detect_gpus()
+    indices, err = memory_utils.parse_device_list(state.get("gpu_devices"), gpus_all)
+    if err:
+        return None, err
+    if indices is None:
+        return None, None
+    if not indices:
+        return "", None
+    return ",".join(str(idx) for idx in indices), None
+
+
 def action_launch(state: dict) -> tuple[bool, str | None]:
     try:
         cmd = build_command(state)
     except ValueError as exc:
         return False, str(exc)
 
+    cuda_devices, err = build_cuda_visible_devices(state)
+    if err:
+        return False, err
     curses.def_prog_mode()
     curses.endwin()
-    print("Launching loadmodel:\n  " + shell_join(cmd), flush=True)
+    prefix = f"CUDA_VISIBLE_DEVICES={cuda_devices} " if cuda_devices is not None else ""
+    print("Launching loadmodel:\n  " + prefix + shell_join(cmd), flush=True)
     try:
-        subprocess.call(cmd)
+        env = os.environ.copy()
+        if cuda_devices is not None:
+            env["CUDA_VISIBLE_DEVICES"] = cuda_devices
+        subprocess.call(cmd, env=env)
     except KeyboardInterrupt:
         pass
     finally:
@@ -985,6 +1127,14 @@ def on_numeric_change(state: dict, _new: str) -> None:
     mark_profile_dirty(state)
 
 
+def on_gpu_devices_change(state: dict, new: str) -> None:
+    mark_profile_dirty(state)
+    gpus_all = memory_utils.detect_gpus()
+    _indices, err = memory_utils.parse_device_list(new, gpus_all)
+    if err:
+        set_status(state, err)
+
+
 def on_tensor_split_change(state: dict, new: str) -> None:
     mark_profile_dirty(state)
     raw = str(new or "").strip()
@@ -994,10 +1144,16 @@ def on_tensor_split_change(state: dict, new: str) -> None:
     if kind == "invalid":
         set_status(state, err)
         return
-    if kind == "ratios" and ratios:
-        gpus = memory_utils.detect_gpus()
+    gpus, sel_err, _indices = resolve_selected_gpus(state)
+    if sel_err:
+        set_status(state, sel_err)
+        return
+    if kind == "auto":
+        if len(gpus) < 2:
+            set_status(state, "Auto split needs at least 2 GPUs selected.")
+    elif kind == "ratios" and ratios:
         if gpus and len(gpus) > 1 and len(ratios) != len(gpus):
-            set_status(state, f"Note: detected {len(gpus)} GPU(s) but tensor split has {len(ratios)} value(s).")
+            set_status(state, f"Note: selected {len(gpus)} GPU(s) but tensor split has {len(ratios)} value(s).")
 
 
 def on_model_source_change(state: dict, choice: ChoiceItem) -> None:
@@ -1014,21 +1170,21 @@ def on_model_source_change(state: dict, choice: ChoiceItem) -> None:
 
 
 def build_gpu_strategy_choices(state: dict) -> List[ChoiceItem]:
-    gpus = memory_utils.detect_gpus()
+    gpus, _err, _indices = resolve_selected_gpus(state)
     count = len(gpus)
-    gpu_missing_reason = "CUDA GPU not detected"
+    gpu_missing_reason = "No CUDA GPUs selected"
     items = [
-        ChoiceItem("balanced", "Even split across GPUs", enabled=count > 1, reason=None if count > 1 else "Requires >=2 GPUs"),
+        ChoiceItem("balanced", "Even split (selected GPUs)", enabled=count > 1, reason=None if count > 1 else "Requires >=2 GPUs"),
         ChoiceItem(
             "vram",
-            "Split by detected VRAM",
+            "Split by VRAM (selected GPUs)",
             enabled=count > 1,
             reason=None if count > 1 else "Requires >=2 GPUs",
         ),
-        ChoiceItem("priority", "Prioritise GPU 0", enabled=count > 1, reason=None if count > 1 else "Requires >=2 GPUs"),
-        ChoiceItem("auto", "Auto split (VRAM)", enabled=count > 1, reason=None if count > 1 else "Requires >=2 GPUs"),
-        ChoiceItem("single", "Single GPU", enabled=count >= 1, reason=None if count >= 1 else gpu_missing_reason),
-        ChoiceItem("cpu", "Offload to system RAM", enabled=True),
+        ChoiceItem("priority", "Bias toward first GPU", enabled=count > 1, reason=None if count > 1 else "Requires >=2 GPUs"),
+        ChoiceItem("auto", "Auto split (policy)", enabled=count > 1, reason=None if count > 1 else "Requires >=2 GPUs"),
+        ChoiceItem("single", "Single GPU (use selection)", enabled=count >= 1, reason=None if count >= 1 else gpu_missing_reason),
+        ChoiceItem("cpu", "CPU only (no GPU offload)", enabled=True),
     ]
     if count == 0:
         for item in items[:-1]:
@@ -1044,9 +1200,11 @@ def apply_gpu_strategy(state: dict, choice: ChoiceItem) -> None:
         state["tensor_split"] = ""
         state["n_gpu_layers"] = "0"
         return
-    gpus = memory_utils.detect_gpus()
+    gpus, err, _indices = resolve_selected_gpus(state)
+    if err:
+        set_status(state, err)
     if not gpus:
-        set_status(state, "No CUDA GPUs detected; falling back to system RAM.")
+        set_status(state, "No CUDA GPUs selected; falling back to system RAM.")
         state["gpu_strategy"] = "cpu"
         state["tensor_split"] = ""
         state["n_gpu_layers"] = "0"
@@ -1224,13 +1382,40 @@ def build_options(state: dict) -> List[OptionBase]:
     )
 
     options.append(
-        InputOption(
-            key="n_gpu_layers",
-            name="--n-gpu-layers",
-            description="llama.cpp layers to keep on GPU. Leave blank for auto fallback.",
+        DeviceSelectOption(
+            key="gpu_devices",
+            name="GPU devices",
+            description="Choose which GPUs are visible to the server process (affects auto split + planner).",
             state=state,
-            placeholder="999",
-            on_change=on_numeric_change,
+            placeholder="all GPUs",
+            on_change=on_gpu_devices_change,
+        )
+    )
+
+    options.append(
+        ChoiceOption(
+            key="gpu_strategy",
+            name="GPU memory strategy",
+            description="Quick presets that update --tensor-split/--n-gpu-layers for the selected GPUs.",
+            state=state,
+            choices_fn=build_gpu_strategy_choices,
+            on_change=apply_gpu_strategy,
+            visible=lambda st: st.get("mode") in {"llm", "embed"},
+        )
+    )
+
+    options.append(
+        ChoiceOption(
+            key="auto_split_policy",
+            name="Auto split policy",
+            description="Controls how 'auto' divides work across the selected GPUs.",
+            state=state,
+            choices=[
+                ChoiceItem("vram", "By total VRAM"),
+                ChoiceItem("free", "By free VRAM"),
+                ChoiceItem("even", "Even split"),
+            ],
+            on_change=lambda st, _choice: mark_profile_dirty(st),
             visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
@@ -1239,10 +1424,39 @@ def build_options(state: dict) -> List[OptionBase]:
         InputOption(
             key="tensor_split",
             name="--tensor-split",
-            description="Comma-separated ratios for multiple GPUs (e.g. 0.6,0.4 or 60,40). Use 'auto' to split by detected VRAM.",
+            description="Comma-separated ratios for multiple GPUs (e.g. 0.6,0.4 or 60,40). Use 'auto' to apply the policy above.",
             state=state,
             placeholder="",
             on_change=on_tensor_split_change,
+            visible=lambda st: st.get("mode") in {"llm", "embed"},
+        )
+    )
+
+    options.append(
+        ChoiceOption(
+            key="split_mode",
+            name="--split-mode",
+            description="How to split the model across GPUs (layer splits layers+KV; row splits rows).",
+            state=state,
+            choices=[
+                ChoiceItem("default", "Default (layer split + KV)"),
+                ChoiceItem("layer", "Layer split"),
+                ChoiceItem("row", "Row split"),
+                ChoiceItem("none", "No split (single GPU)"),
+            ],
+            on_change=lambda st, _choice: mark_profile_dirty(st),
+            visible=lambda st: st.get("mode") in {"llm", "embed"},
+        )
+    )
+
+    options.append(
+        InputOption(
+            key="n_gpu_layers",
+            name="--n-gpu-layers",
+            description="llama.cpp layers to keep on GPU. Leave blank for auto fallback.",
+            state=state,
+            placeholder="999",
+            on_change=on_numeric_change,
             visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
@@ -1278,18 +1492,6 @@ def build_options(state: dict) -> List[OptionBase]:
             placeholder="",
             on_change=on_numeric_change,
             visible=lambda st: st.get("mode") in {"llm", "embed"} and not st.get("cpu_moe"),
-        )
-    )
-
-    options.append(
-        ChoiceOption(
-            key="gpu_strategy",
-            name="GPU memory strategy",
-            description="Controls how llama.cpp spreads model weights across GPUs or system RAM.",
-            state=state,
-            choices_fn=build_gpu_strategy_choices,
-            on_change=apply_gpu_strategy,
-            visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
 
@@ -1436,21 +1638,62 @@ def _option_detail_lines(opt: OptionBase, state: dict) -> List[tuple[str, int]]:
         value = str(state.get(opt.key, "")).strip()
         lines.append(("", 0))
         lines.append((f"Current: {value or '(blank)'}", curses.A_DIM))
+        if opt.key == "gpu_devices":
+            gpus_all = memory_utils.detect_gpus()
+            if not gpus_all:
+                lines.append(("No CUDA GPUs detected.", curses.A_DIM))
+            else:
+                indices, err = memory_utils.parse_device_list(value, gpus_all)
+                if err:
+                    lines.append((f"⚠ {err}", curses.A_DIM))
+                elif indices is None:
+                    lines.append(("Selected: all GPUs", curses.A_DIM))
+                elif not indices:
+                    lines.append(("Selected: CPU-only", curses.A_DIM))
+                else:
+                    joined = ", ".join(f"GPU{idx}" for idx in indices)
+                    lines.append((f"Selected: {joined}", curses.A_DIM))
+                lines.append(("Detected GPUs:", curses.A_DIM))
+                for gpu in gpus_all:
+                    total = memory_utils.format_bytes(gpu.total)
+                    free = memory_utils.format_bytes(gpu.free)
+                    if gpu.free is None:
+                        lines.append((f"GPU{gpu.index}: {gpu.name} ({total} total)", curses.A_DIM))
+                    else:
+                        lines.append((f"GPU{gpu.index}: {gpu.name} ({free} free / {total} total)", curses.A_DIM))
         if opt.key == "tensor_split" and value:
             kind, ratios, err = memory_utils.parse_tensor_split(value)
+            gpus, sel_err, _indices = resolve_selected_gpus(state)
+            if sel_err:
+                lines.append((f"⚠ {sel_err}", curses.A_DIM))
             if kind == "ratios" and ratios:
                 denom = sum(ratios) or 1.0
                 percents = [(r / denom) * 100.0 for r in ratios]
-                gpus = memory_utils.detect_gpus()
                 if gpus and len(gpus) == len(percents):
                     lines.append(("Normalised split:", curses.A_DIM))
                     for idx, pct in enumerate(percents):
-                        lines.append((f"GPU{idx}: {pct:.1f}% ({gpus[idx].name})", curses.A_DIM))
+                        lines.append((f"GPU{gpus[idx].index}: {pct:.1f}% ({gpus[idx].name})", curses.A_DIM))
                 else:
                     joined = ", ".join(f"{pct:.1f}%" for pct in percents)
                     lines.append((f"Normalised: {joined}", curses.A_DIM))
             elif kind == "auto":
-                lines.append(("Mode: auto (estimated from VRAM)", curses.A_DIM))
+                policy = str(state.get("auto_split_policy") or "vram").strip().lower()
+                auto_value = memory_utils.auto_tensor_split(gpus, policy=policy)
+                lines.append((f"Mode: auto ({policy})", curses.A_DIM))
+                if auto_value:
+                    kind2, ratios2, _err2 = memory_utils.parse_tensor_split(auto_value)
+                    if kind2 == "ratios" and ratios2:
+                        denom = sum(ratios2) or 1.0
+                        percents = [(r / denom) * 100.0 for r in ratios2]
+                        if gpus and len(gpus) == len(percents):
+                            lines.append(("Resolved split:", curses.A_DIM))
+                            for idx, pct in enumerate(percents):
+                                lines.append((f"GPU{gpus[idx].index}: {pct:.1f}% ({gpus[idx].name})", curses.A_DIM))
+                        else:
+                            joined = ", ".join(f"{pct:.1f}%" for pct in percents)
+                            lines.append((f"Resolved: {joined}", curses.A_DIM))
+                else:
+                    lines.append(("Auto split requires >=2 selected GPUs.", curses.A_DIM))
             elif kind == "invalid" and err:
                 lines.append((f"⚠ {err}", curses.A_DIM))
         lines.append(("Enter: edit (Enter saves, Esc cancels)", curses.A_DIM))
@@ -1969,6 +2212,9 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
         "port": "45540",
         "n_gpu_layers": "999",
         "tensor_split": "",
+        "auto_split_policy": "vram",
+        "split_mode": "default",
+        "gpu_devices": "all",
         "ctx_size": "",
         "extra_flags": "",
         "gpu_strategy": "balanced",

@@ -214,6 +214,51 @@ def detect_gpus() -> List[GPUInfo]:
         return []
 
 
+def parse_device_list(value: str | None, gpus: Optional[List[GPUInfo]] = None) -> tuple[Optional[List[int]], Optional[str]]:
+    """Parse a GPU device list (e.g. '0,1' or 'cuda:0,cuda:1'). Returns (indices, error)."""
+    raw = str(value or "").strip()
+    if not raw:
+        return (None, None)
+    lowered = raw.lower()
+    if lowered in ("all", "auto", "default"):
+        return (None, None)
+    if lowered in ("none", "cpu", "off"):
+        return ([], None)
+
+    tokens = [tok.strip() for tok in re.split(r"[,\s]+", raw) if tok.strip()]
+    if not tokens:
+        return (None, "GPU device list cannot be empty.")
+    indices: List[int] = []
+    for token in tokens:
+        cleaned = token.lower()
+        for prefix in ("cuda:", "gpu:"):
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix):]
+        if not cleaned.isdigit():
+            return (None, f"Invalid GPU entry '{token}'. Use a comma-separated list like 0,1.")
+        idx = int(cleaned)
+        if idx not in indices:
+            indices.append(idx)
+
+    if gpus is not None and gpus:
+        valid = {gpu.index for gpu in gpus}
+        missing = [str(idx) for idx in indices if idx not in valid]
+        if missing:
+            return (None, f"GPU index(es) not available: {', '.join(missing)}.")
+    return (indices, None)
+
+
+def filter_gpus_by_selection(
+    gpus: List[GPUInfo],
+    selection: str | None,
+) -> tuple[List[GPUInfo], Optional[str], Optional[List[int]]]:
+    indices, err = parse_device_list(selection, gpus)
+    if indices is None:
+        return gpus, err, None
+    selected = [gpu for gpu in gpus if gpu.index in indices]
+    return selected, err, indices
+
+
 def _distribute(total: int, count: int, strategy: str) -> List[int]:
     if count <= 0:
         return []
@@ -289,13 +334,29 @@ def parse_tensor_split(value: str | None) -> tuple[str, Optional[List[float]], O
     return ("ratios", ratios, None)
 
 
-def auto_tensor_split(gpus: Optional[List[GPUInfo]] = None) -> Optional[str]:
-    """Return a comma-separated split string based on detected VRAM, or None if not applicable."""
+def auto_tensor_split(
+    gpus: Optional[List[GPUInfo]] = None,
+    *,
+    policy: str = "vram",
+) -> Optional[str]:
+    """Return a comma-separated split string based on the chosen policy, or None if not applicable."""
     if gpus is None:
         gpus = detect_gpus()
     if not gpus or len(gpus) < 2:
         return None
-    totals = [float(gpu.total or 1.0) for gpu in gpus]
+    policy = (policy or "vram").strip().lower()
+    if policy == "even":
+        totals = [1.0 for _ in gpus]
+    else:
+        totals = []
+        for gpu in gpus:
+            if policy == "free":
+                value = gpu.free if gpu.free is not None else gpu.total
+            else:
+                value = gpu.total
+            if value is None or value <= 0:
+                value = 1.0
+            totals.append(float(value))
     denom = sum(totals)
     if denom <= 0:
         base = 100 // len(gpus)
@@ -403,6 +464,8 @@ def estimate_memory_profile(state: dict, *, refresh: bool = False) -> MemoryProf
         state.get("n_gpu_layers"),
         state.get("tensor_split"),
         state.get("gpu_strategy"),
+        state.get("gpu_devices"),
+        state.get("auto_split_policy"),
         state.get("hf_token"),
     )
     cache = state.get("_memory_profile_cache")
@@ -499,10 +562,18 @@ def estimate_memory_profile(state: dict, *, refresh: bool = False) -> MemoryProf
         warnings.append("Layer count unknown; treating --n-gpu-layers as full offload.")
         gpu_ratio = 1.0 if ngl_value > 0 else 0.0
 
-    gpus = detect_gpus()
+    gpus_all = detect_gpus()
+    gpus, selection_err, selection_indices = filter_gpus_by_selection(
+        gpus_all,
+        state.get("gpu_devices"),
+    )
+    if selection_err:
+        warnings.append(selection_err)
+    if selection_indices == []:
+        warnings.append("No CUDA GPUs selected; weights will remain on system RAM.")
     strategy = state.get("gpu_strategy") or ("cpu" if not gpus else "single")
     if not gpus and strategy != "cpu" and gpu_ratio > 0:
-        warnings.append("No CUDA GPUs detected; weights will remain on system RAM.")
+        warnings.append("No CUDA GPUs available; weights will remain on system RAM.")
         gpu_ratio = 0.0
     weights_gpu = int(weights_total * gpu_ratio)
     weights_cpu = max(weights_total - weights_gpu, 0)
@@ -525,7 +596,19 @@ def estimate_memory_profile(state: dict, *, refresh: bool = False) -> MemoryProf
 
     ratio_weights: Optional[List[float]] = None
     if split_kind == "auto" and gpus:
-        ratio_weights = [float(gpu.total or 1) for gpu in gpus]
+        policy = str(state.get("auto_split_policy") or "vram")
+        if policy.strip().lower() == "even":
+            ratio_weights = [1.0 for _ in gpus]
+        else:
+            ratio_weights = []
+            for gpu in gpus:
+                if policy.strip().lower() == "free":
+                    value = gpu.free if gpu.free is not None else gpu.total
+                else:
+                    value = gpu.total
+                if value is None or value <= 0:
+                    value = 1.0
+                ratio_weights.append(float(value))
     elif split_kind == "ratios" and split_ratios:
         ratio_weights = split_ratios
 

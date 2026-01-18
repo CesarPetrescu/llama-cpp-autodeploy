@@ -232,6 +232,7 @@ def launch_llama_server(
     extra: List[str],
     n_gpu_layers: Optional[int],
     tensor_split: Optional[str],
+    split_mode: Optional[str],
     ctx_size: Optional[int],
     n_cpu_moe: Optional[int],
     cpu_moe: bool,
@@ -242,6 +243,8 @@ def launch_llama_server(
     ]
     if n_gpu_layers is not None and n_gpu_layers > 0:
         cmd += ["--n-gpu-layers", str(n_gpu_layers)]
+    if split_mode:
+        cmd += ["--split-mode", split_mode]
     if tensor_split:
         cmd += ["--tensor-split", tensor_split]
     if ctx_size:
@@ -295,6 +298,7 @@ def launch_llama_server_with_backoff(
     extra: List[str],
     n_gpu_layers: Optional[int],
     tensor_split: Optional[str],
+    split_mode: Optional[str],
     ctx_size: Optional[int],
     n_cpu_moe: Optional[int],
     cpu_moe: bool,
@@ -313,6 +317,7 @@ def launch_llama_server_with_backoff(
             extra,
             ngl_try,
             tensor_split,
+            split_mode,
             ctx_size,
             n_cpu_moe,
             cpu_moe,
@@ -652,6 +657,7 @@ For --rerank (Transformers):
     # llama-server runtime
     p.add_argument("--n-gpu-layers", type=int, default=999)
     p.add_argument("--tensor-split", default=None, help='e.g. "50,50" for 2 GPUs (use "auto" for VRAM split)')
+    p.add_argument("--split-mode", default=None, help="none|layer|row (GPU split mode)")
     p.add_argument("--ctx-size", type=int, default=None)
     p.add_argument("--n-cpu-moe", type=int, default=None, help="Offload experts for the first N layers to CPU (Mixture-of-Experts models)")
     p.add_argument("--cpu-moe", action="store_true", help="Offload all experts to CPU (Mixture-of-Experts models)")
@@ -703,6 +709,10 @@ For --rerank (Transformers):
         if kind == "auto":
             tensor_split = memory_utils.auto_tensor_split()
 
+    split_mode = args.split_mode
+    if split_mode and str(split_mode).strip().lower() == "default":
+        split_mode = None
+
     proc = launch_llama_server_with_backoff(
         model_path=gguf_path,
         host=args.host,
@@ -710,6 +720,7 @@ For --rerank (Transformers):
         extra=extra,
         n_gpu_layers=args.n_gpu_layers,
         tensor_split=tensor_split,
+        split_mode=split_mode,
         ctx_size=args.ctx_size,
         n_cpu_moe=args.n_cpu_moe,
         cpu_moe=args.cpu_moe,

@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from collections import deque
 import tui_utils
+import memory_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BIN_DIR = SCRIPT_DIR / "bin"
@@ -165,6 +166,29 @@ def _option_detail_lines(opt: "OptionBase", state: dict) -> List[tuple[str, int]
         value = str(state.get(opt.key, "")).strip()
         lines.append(("", 0))
         lines.append((f"Current: {value or '(blank)'}", curses.A_DIM))
+        if opt.key == "worker_devices":
+            gpus_all = memory_utils.detect_gpus()
+            if not gpus_all:
+                lines.append(("No CUDA GPUs detected.", curses.A_DIM))
+            else:
+                indices, err = memory_utils.parse_device_list(value, gpus_all)
+                if err:
+                    lines.append((f"⚠ {err}", curses.A_DIM))
+                elif indices is None:
+                    lines.append(("Selected: all GPUs", curses.A_DIM))
+                elif not indices:
+                    lines.append(("Selected: CPU-only", curses.A_DIM))
+                else:
+                    joined = ", ".join(f"GPU{idx}" for idx in indices)
+                    lines.append((f"Selected: {joined}", curses.A_DIM))
+                lines.append(("Detected GPUs:", curses.A_DIM))
+                for gpu in gpus_all:
+                    total = memory_utils.format_bytes(gpu.total)
+                    free = memory_utils.format_bytes(gpu.free)
+                    if gpu.free is None:
+                        lines.append((f"GPU{gpu.index}: {gpu.name} ({total} total)", curses.A_DIM))
+                    else:
+                        lines.append((f"GPU{gpu.index}: {gpu.name} ({free} free / {total} total)", curses.A_DIM))
         lines.append(("Enter: edit (Enter saves, Esc cancels)", curses.A_DIM))
     elif isinstance(opt, ToggleOption):
         enabled = bool(state.get(opt.key))
@@ -244,6 +268,27 @@ class ChoiceItem:
     label: str
     enabled: bool = True
     reason: str | None = None
+
+
+def _gpu_label(gpu: memory_utils.GPUInfo) -> str:
+    total = memory_utils.format_bytes(gpu.total)
+    free = memory_utils.format_bytes(gpu.free)
+    if gpu.free is None:
+        return f"GPU{gpu.index} {gpu.name} ({total} total)"
+    return f"GPU{gpu.index} {gpu.name} ({free} free / {total} total)"
+
+
+def format_gpu_selection(value: str | None, gpus: List[memory_utils.GPUInfo]) -> str:
+    if not gpus:
+        return "cpu-only"
+    indices, err = memory_utils.parse_device_list(value, gpus)
+    if err:
+        return "invalid"
+    if indices is None:
+        return "all"
+    if not indices:
+        return "cpu-only"
+    return ",".join(str(idx) for idx in indices)
 
 
 class OptionBase:
@@ -392,6 +437,93 @@ class InputOption(OptionBase):
     def is_modified(self, state: dict) -> bool:
         baseline = "" if self.default_value is None else str(self.default_value)
         return str(state.get(self.key, "")) != baseline
+
+
+class DeviceSelectOption(InputOption):
+    def __init__(
+        self,
+        key: str,
+        name: str,
+        description: str,
+        *,
+        placeholder: str = "all GPUs",
+        on_change: Callable[[dict, str], None] | None = None,
+        visible: Callable[[dict], bool] | None = None,
+    ) -> None:
+        super().__init__(
+            key,
+            name,
+            description,
+            placeholder=placeholder,
+            on_change=on_change,
+            visible=visible,
+        )
+        self.icon = "[GPU]"
+
+    def _edit(self, stdscr: "curses._CursesWindow", state: dict) -> None:
+        gpus = memory_utils.detect_gpus()
+        if not gpus:
+            state["status"] = "No CUDA GPUs detected."
+            return
+        items = [_gpu_label(gpu) for gpu in gpus]
+        current = str(state.get(self.key, "")).strip()
+        indices, err = memory_utils.parse_device_list(current, gpus)
+        if err:
+            state["status"] = err
+        index_map = {gpu.index: idx for idx, gpu in enumerate(gpus)}
+        if indices is None:
+            selected = list(range(len(gpus)))
+        else:
+            selected = [index_map[idx] for idx in indices if idx in index_map]
+        result = tui_utils.multi_select_dialog(
+            stdscr,
+            title=f"Select {self.name}",
+            items=items,
+            selected=selected,
+        )
+        if not result.accepted:
+            return
+        picked = [gpus[idx].index for idx in result.indices if 0 <= idx < len(gpus)]
+        if not picked:
+            value = "none"
+        elif len(picked) == len(gpus):
+            value = "all"
+        else:
+            value = ",".join(str(idx) for idx in picked)
+        if value != current:
+            state[self.key] = value
+            if self._on_change is not None:
+                self._on_change(state, value)
+
+    def render(
+        self,
+        win: "curses._CursesWindow",
+        y: int,
+        width: int,
+        selected: bool,
+        state: dict,
+    ) -> int:
+        attr = curses.A_REVERSE if selected else curses.A_NORMAL
+        gpus_all = memory_utils.detect_gpus()
+        display = format_gpu_selection(state.get(self.key, ""), gpus_all) if gpus_all else "cpu-only"
+        marker = "*" if self.is_modified(state) else " "
+        label = f"{marker}{self.icon} {self.name}: {display}"
+        win.addnstr(y, 2, label, max(10, width - 4), attr)
+        summary = self.get_summary(max(0, width - len(label) - 6))
+        if summary:
+            win.addnstr(
+                y,
+                min(width - 2, 2 + len(label) + 1),
+                f" · {summary}",
+                max(10, width - len(label) - 4),
+                curses.A_DIM,
+            )
+        line_count = 1
+        wrap_width = max(10, width - 6)
+        for line in textwrap.wrap(self.description, wrap_width):
+            win.addnstr(y + line_count, 6, line, max(10, width - 8), curses.A_DIM)
+            line_count += 1
+        return line_count
 
 
 class ToggleOption(OptionBase):
@@ -772,12 +904,26 @@ def build_rpc_command(state: dict) -> List[str]:
     return cmd
 
 
+def build_cuda_visible_devices(value: str | None) -> tuple[Optional[str], Optional[str]]:
+    gpus_all = memory_utils.detect_gpus()
+    indices, err = memory_utils.parse_device_list(value, gpus_all)
+    if err:
+        return None, err
+    if indices is None:
+        return None, None
+    if not indices:
+        return "", None
+    return ",".join(str(idx) for idx in indices), None
+
+
 def start_worker_process(state: dict) -> subprocess.Popen:
     cmd = build_rpc_command(state)
     env = os.environ.copy()
-    device = state.get("worker_devices", "").strip()
-    if device:
-        env["CUDA_VISIBLE_DEVICES"] = device
+    cuda_devices, err = build_cuda_visible_devices(state.get("worker_devices"))
+    if err:
+        raise RuntimeError(err)
+    if cuda_devices is not None:
+        env["CUDA_VISIBLE_DEVICES"] = cuda_devices
     try:
         proc = subprocess.Popen(cmd, env=env)
     except FileNotFoundError as exc:
@@ -1050,11 +1196,11 @@ def build_options(state: dict) -> List[OptionBase]:
             placeholder="/tmp/llama-cache",
             visible=lambda st: st.get("local_worker"),
         ),
-        InputOption(
+        DeviceSelectOption(
             "worker_devices",
-            "CUDA_VISIBLE_DEVICES",
-            "Restrict GPUs visible to the local rpc-server (e.g. 0 or 0,1). Leave blank for all.",
-            placeholder="",
+            "Local worker GPUs",
+            "Choose which GPUs are visible to the local rpc-server.",
+            placeholder="all GPUs",
             visible=lambda st: st.get("local_worker"),
         ),
         ActionOption(
