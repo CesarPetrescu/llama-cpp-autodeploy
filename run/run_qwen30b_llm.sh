@@ -5,7 +5,7 @@ source venv/bin/activate
 
 # Qwen3-30B A3B Thinking (Unsloth) – llama.cpp server
 # Listens on 0.0.0.0:45540 so LiteLLM (on another host) can reach it.
-N_CPU_MOE=${N_CPU_MOE:-10}  # Offload experts for the first N MoE layers to CPU (tune based on VRAM)
+N_CPU_MOE="${N_CPU_MOE:-}"  # Set to a number to offload experts for the first N MoE layers
 EXTRA_FLAGS=(--threads 32)
 if [[ -n "${N_CPU_MOE}" ]]; then
   EXTRA_FLAGS+=(--n-cpu-moe "${N_CPU_MOE}")

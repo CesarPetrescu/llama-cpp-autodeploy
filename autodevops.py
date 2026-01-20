@@ -160,8 +160,16 @@ def write_math_fix_header(build_dir: Path) -> Path:
     )
     return hdr
 
+def _first_lib_match(patterns: list[str]) -> Path | None:
+    for pattern in patterns:
+        matches = glob.glob(pattern)
+        if matches:
+            return Path(matches[0])
+    return None
+
+
 def _lib_present(patterns: list[str]) -> bool:
-    return any(glob.glob(p) for p in patterns)
+    return _first_lib_match(patterns) is not None
 
 
 def mkl_present() -> bool:
@@ -174,6 +182,25 @@ def mkl_present() -> bool:
     return _lib_present(candidates)
 
 
+def detect_mkl_paths() -> tuple[Path | None, Path | None]:
+    candidates = [
+        "/usr/lib/x86_64-linux-gnu/libmkl_rt.so",
+        "/usr/lib/x86_64-linux-gnu/libmkl_rt.so.*",
+        "/opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_rt.so",
+        "/opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_rt.so.*",
+    ]
+    lib_path = _first_lib_match(candidates)
+    if lib_path is None:
+        return None, None
+    lib_dir = lib_path.parent
+    root = None
+    if lib_dir.name == "intel64" and lib_dir.parent.name == "lib":
+        root = lib_dir.parent.parent
+    elif lib_dir.name == "lib":
+        root = lib_dir.parent
+    return lib_dir, root
+
+
 def openblas_present() -> bool:
     candidates = [
         "/usr/lib/x86_64-linux-gnu/libopenblas.so",
@@ -182,6 +209,26 @@ def openblas_present() -> bool:
         "/usr/lib/libopenblas.so.*",
     ]
     return _lib_present(candidates)
+
+
+def detect_openblas_lib_dir() -> Path | None:
+    candidates = [
+        "/usr/lib/x86_64-linux-gnu/libopenblas.so",
+        "/usr/lib/x86_64-linux-gnu/libopenblas.so.*",
+        "/usr/lib/libopenblas.so",
+        "/usr/lib/libopenblas.so.*",
+    ]
+    lib_path = _first_lib_match(candidates)
+    return lib_path.parent if lib_path is not None else None
+
+
+def _append_cmake_list(value: str, entry: str) -> str:
+    if not value:
+        return entry
+    parts = value.split(";")
+    if entry in parts:
+        return value
+    return f"{value};{entry}"
 
 
 def blas_hint(vendor: str) -> str:
@@ -204,6 +251,47 @@ def clone_llama(version: str, build_path: Path):
         shutil.rmtree(build_path)
     run(["git","clone","--depth","1","--branch",version,REPO_URL,str(build_path)])
 
+
+def patch_cuda_iterators(build_path: Path) -> None:
+    target = build_path / "ggml" / "src" / "ggml-cuda" / "argsort.cu"
+    if not target.exists():
+        return
+    try:
+        text = target.read_text()
+    except Exception as exc:
+        log(f"Warning: failed to read {target}: {exc}")
+        return
+    if "cuda::make_strided_iterator" not in text:
+        return
+    if "init_offsets" in text:
+        return
+    insert = (
+        "\n\nstatic __global__ void init_offsets(int * offsets, const int ncols, const int nrows) {\n"
+        "    const int idx = blockIdx.x * blockDim.x + threadIdx.x;\n"
+        "    if (idx <= nrows) {\n"
+        "        offsets[idx] = idx * ncols;\n"
+        "    }\n"
+        "}\n\n"
+    )
+    text = text.replace("\n\n#ifdef GGML_CUDA_USE_CUB\n", insert + "#ifdef GGML_CUDA_USE_CUB\n", 1)
+    text = text.replace(
+        "    auto offset_iterator = cuda::make_strided_iterator(cuda::make_counting_iterator(0), ncols);\n",
+        "    ggml_cuda_pool_alloc<int> offsets_alloc(pool, nrows + 1);\n"
+        "    int * offsets = offsets_alloc.get();\n"
+        "    const int offset_count = nrows + 1;\n"
+        "    const int offset_blocks = (offset_count + block_size - 1) / block_size;\n"
+        "    init_offsets<<<offset_blocks, block_size, 0, stream>>>(offsets, ncols, nrows);\n",
+        1,
+    )
+    text = text.replace("offset_iterator, offset_iterator + 1", "offsets, offsets + 1")
+    if "offset_iterator" in text:
+        text = text.replace("offset_iterator", "offsets")
+    try:
+        target.write_text(text)
+        log("Applied CUDA iterator compatibility patch for ggml-cuda/argsort.cu.")
+    except Exception as exc:
+        log(f"Warning: failed to patch {target}: {exc}")
+
 def link_outputs(build_path: Path):
     # Update ./llama-current symlink
     if CURRENT_DIR.is_symlink() or CURRENT_DIR.exists():
@@ -222,6 +310,7 @@ def link_outputs(build_path: Path):
 def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str, enable_rpc: bool):
     build_path = BUILD_ROOT / f"llama-cpp-{version}"
     clone_llama(version, build_path)
+    patch_cuda_iterators(build_path)
 
     (build_path/"build").mkdir(parents=True, exist_ok=True)
 
@@ -237,21 +326,31 @@ def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str, e
     log(f"Using CUDA at: {cuda_home} (nvcc {nvcc_ver[0]}.{nvcc_ver[1]})" if nvcc_ver else f"Using CUDA at: {cuda_home}")
 
     # BLAS selection
+    mkl_lib_dir, mkl_root = detect_mkl_paths()
+    openblas_lib_dir = detect_openblas_lib_dir()
+    blas_lib_dir: Path | None = None
+    blas_root: Path | None = None
     if blas_mode == "off":
         ggml_blas = "OFF"; blas_vendor = "Generic"
     elif blas_mode == "mkl":
-        if not mkl_present():
+        if not mkl_lib_dir:
             raise SystemExit("Intel oneAPI MKL not detected on this system.\n" + blas_hint("mkl"))
         ggml_blas = "ON";  blas_vendor = "Intel10_64lp"
+        blas_lib_dir = mkl_lib_dir
+        blas_root = mkl_root
     elif blas_mode == "openblas":
-        if not openblas_present():
+        if not openblas_lib_dir:
             raise SystemExit("OpenBLAS not detected on this system.\n" + blas_hint("openblas"))
         ggml_blas = "ON";  blas_vendor = "OpenBLAS"
+        blas_lib_dir = openblas_lib_dir
     else:
-        if mkl_present():
+        if mkl_lib_dir:
             ggml_blas = "ON";  blas_vendor = "Intel10_64lp"
-        elif openblas_present():
+            blas_lib_dir = mkl_lib_dir
+            blas_root = mkl_root
+        elif openblas_lib_dir:
             ggml_blas = "ON";  blas_vendor = "OpenBLAS"
+            blas_lib_dir = openblas_lib_dir
         else:
             log("No MKL or OpenBLAS libraries detected; building without BLAS acceleration.")
             ggml_blas = "OFF"; blas_vendor = "Generic"
@@ -297,12 +396,25 @@ def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str, e
     if cuda_flags:
         cmake_cmd.append(f"-DCMAKE_CUDA_FLAGS={cuda_flags}")
     cmake_cmd.append(f"-DGGML_RPC={'ON' if enable_rpc else 'OFF'}")
+    if ggml_blas == "ON":
+        cmake_prefix = os.environ.get("CMAKE_PREFIX_PATH", "")
+        cmake_lib = os.environ.get("CMAKE_LIBRARY_PATH", "")
+        if blas_root:
+            cmake_prefix = _append_cmake_list(cmake_prefix, str(blas_root))
+        if blas_lib_dir:
+            cmake_lib = _append_cmake_list(cmake_lib, str(blas_lib_dir))
+        if cmake_prefix:
+            cmake_cmd.append(f"-DCMAKE_PREFIX_PATH={cmake_prefix}")
+        if cmake_lib:
+            cmake_cmd.append(f"-DCMAKE_LIBRARY_PATH={cmake_lib}")
 
     env = {
         **os.environ,
         "PATH": str(cuda_home/"bin") + os.pathsep + os.environ.get("PATH",""),
         "LD_LIBRARY_PATH": str(cuda_home/"lib64") + os.pathsep + os.environ.get("LD_LIBRARY_PATH",""),
     }
+    if ggml_blas == "ON" and blas_root and "MKLROOT" not in env:
+        env["MKLROOT"] = str(blas_root)
 
     run(cmake_cmd, cwd=build_path/"build", env=env)
     run(["make", f"-j{os.cpu_count() or 1}"], cwd=build_path/"build", env=env)

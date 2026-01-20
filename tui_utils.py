@@ -62,16 +62,23 @@ def edit_line_dialog(
         win.border()
 
         clean_title = (title or "").strip() or "Enter value"
-        win.addnstr(title_y, 2, clean_title, max(1, dialog_width - 4), curses.A_BOLD)
+        try:
+            win.addnstr(title_y, 2, clean_title, max(1, dialog_width - 4), curses.A_BOLD)
+        except curses.error:
+            pass
 
         help_line = instructions
         if help_line is None:
             help_line = "Enter: save  Esc: cancel  Ctrl+U: clear"
-        win.addnstr(instructions_y, 2, help_line, max(1, dialog_width - 4), curses.A_DIM)
+        try:
+            win.addnstr(instructions_y, 2, help_line, max(1, dialog_width - 4), curses.A_DIM)
+        except curses.error:
+            pass
 
         field_width = max(1, dialog_width - 4)
         field = win.derwin(1, field_width, field_y, field_x)
         field.keypad(True)
+        field.bkgd(" ", curses.A_REVERSE)
         return win, field, dialog_width, field_width
 
     try:
@@ -88,17 +95,27 @@ def edit_line_dialog(
         while True:
             if cursor < scroll:
                 scroll = cursor
-            visible_capacity = max(1, field_width - 1)
+            render_width = max(1, field_width - 1)
+            visible_capacity = max(1, render_width - 1)
             if cursor > scroll + visible_capacity:
                 scroll = cursor - visible_capacity
             if scroll < 0:
                 scroll = 0
 
-            visible = "".join(buffer[scroll : scroll + field_width])
-            field.erase()
-            field.addnstr(0, 0, visible.ljust(field_width), field_width)
-            field.move(0, max(0, min(field_width - 1, cursor - scroll)))
-            win.refresh()
+            visible = "".join(buffer[scroll : scroll + render_width])
+            try:
+                field.erase()
+                field.addnstr(0, 0, visible.ljust(render_width), render_width, curses.A_REVERSE)
+                field.move(0, max(0, min(render_width - 1, cursor - scroll)))
+                field.refresh()
+                win.refresh()
+            except curses.error:
+                try:
+                    win, field, dialog_width, field_width = layout()
+                    scroll = min(scroll, max(0, len(buffer) - 1))
+                except Exception:
+                    return LineEditResult(value=initial, accepted=False)
+                continue
 
             key = win.getch()
             if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):

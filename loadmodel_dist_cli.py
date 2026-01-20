@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import curses
 import ipaddress
-import json
 import os
 import shlex
 import subprocess
@@ -19,9 +18,25 @@ from typing import Callable, Iterable, List, Optional, Tuple
 import socket
 from concurrent.futures import ThreadPoolExecutor
 
-from collections import deque
 import tui_utils
 import memory_utils
+from constants import LOADMODEL_DIST_LAYOUT, UI
+from keybindings import KEYS
+from process_utils import register_process, unregister_process
+from state_utils import StrictStateMixin
+from tui_base import (
+    UIState,
+    append_log,
+    apply_saved_values,
+    draw_logs,
+    format_scroll_indicator,
+    layout_mode,
+    load_saved_state,
+    prepare_help_panel,
+    save_state,
+)
+from validators import split_extra_flags as validate_split_extra_flags
+from validators import validate_int, validate_path, validate_port
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BIN_DIR = SCRIPT_DIR / "bin"
@@ -29,10 +44,7 @@ LLAMA_CLI = BIN_DIR / "llama-cli"
 RPC_SERVER = BIN_DIR / "rpc-server"
 MODELS_DIR = SCRIPT_DIR / "models"
 DEFAULT_RPC_PORT = "5515"
-SCAN_TIMEOUT = 0.25
 CONFIG_PATH = SCRIPT_DIR / ".loadmodel_dist_cli.json"
-LOG_HISTORY = 200
-SPINNER_FRAMES = "|/-\\"
 
 STRINGS = {
     "title": "llama.cpp Distributed Launcher",
@@ -46,108 +58,32 @@ STRINGS = {
 }
 
 
-def append_log(ui_state: dict, message: str) -> None:
-    if not message:
-        return
-    logs = ui_state.setdefault("logs", deque(maxlen=LOG_HISTORY))
-    timestamp = time.strftime("%H:%M:%S")
-    logs.append(f"[{timestamp}] {message}")
-    ui_state["status_message"] = message
-    ui_state.setdefault("logs_offset", 0)
-    if ui_state.get("focus_area", 0) != 2:
-        ui_state["logs_offset"] = 0
+@dataclass
+class LoadModelDistState(StrictStateMixin):
+    models_dir: str = str(MODELS_DIR)
+    local_models: list[str] | None = None
+    selected_local_model: str = ""
+    model_path: str = ""
+    rpc_hosts: str = ""
+    ctx_size: str = ""
+    n_gpu_layers: str = "999"
+    batch_size: str = ""
+    tensor_cache: str = ""
+    prompt_file: str = ""
+    prompt_text: str = ""
+    extra_flags: str = ""
+    local_worker: bool = False
+    worker_host: str = "0.0.0.0"
+    worker_port: str = DEFAULT_RPC_PORT
+    worker_cache: str = ""
+    worker_devices: str = ""
+    worker_process: subprocess.Popen | None = None
+    discovered_hosts: list[str] | None = None
+    status: str = ""
 
-
-def load_saved_state() -> dict:
-    try:
-        with CONFIG_PATH.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-            if isinstance(data, dict):
-                return data
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return {}
-    return {}
-
-
-def save_state(options: List["OptionBase"], state: dict) -> None:
-    payload = {}
-    for opt in options:
-        try:
-            payload[opt.key] = opt.get_value(state)
-        except Exception:
-            continue
-    try:
-        CONFIG_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def apply_saved_values(options: List["OptionBase"], state: dict, saved: dict) -> None:
-    if not saved:
-        return
-    for opt in options:
-        if opt.key in saved:
-            try:
-                opt.set_value(state, saved[opt.key])
-            except Exception:
-                continue
-
-
-def draw_logs(
-    stdscr: "curses._CursesWindow",
-    ui_state: dict,
-    start_row: int,
-    width: int,
-    height: int,
-) -> int:
-    logs = list(ui_state.get("logs", []))
-    if not logs or start_row >= height:
-        ui_state["logs_max_offset"] = 0
-        ui_state["logs_visible_rows"] = 0
-        return 0
-    focus = ui_state.get("focus_area", 0) == 2
-    available_rows = max(0, height - start_row)
-    if available_rows <= 0:
-        ui_state["logs_max_offset"] = 0
-        ui_state["logs_visible_rows"] = 0
-        return 0
-
-    heading_attr = curses.A_BOLD | (curses.A_REVERSE if focus else curses.A_DIM)
-    stdscr.addnstr(
-        start_row,
-        2,
-        STRINGS["logs_heading"][: max(1, width - 4)],
-        max(1, width - 4),
-        heading_attr,
-    )
-    if available_rows == 1:
-        ui_state["logs_max_offset"] = 0
-        ui_state["logs_visible_rows"] = 0
-        return 1
-
-    body_rows = available_rows - 1
-    ui_state.setdefault("logs_offset", 0)
-    max_start = max(0, len(logs) - body_rows)
-    offset = min(max(0, ui_state["logs_offset"]), max_start)
-    first_idx = max_start - offset
-    first_idx = max(0, first_idx)
-    slice_logs = logs[first_idx : first_idx + body_rows]
-    ui_state["logs_offset"] = offset
-    ui_state["logs_max_offset"] = max_start
-    ui_state["logs_visible_rows"] = len(slice_logs)
-
-    for idx, line in enumerate(slice_logs, start=1):
-        attr = curses.A_DIM | (curses.A_REVERSE if focus else 0)
-        stdscr.addnstr(
-            start_row + idx,
-            2,
-            line[: max(1, width - 4)],
-            max(1, width - 4),
-            attr,
-        )
-    return 1 + len(slice_logs)
+    def __post_init__(self) -> None:
+        if self.discovered_hosts is None:
+            self.discovered_hosts = []
 
 
 def _option_detail_lines(opt: "OptionBase", state: dict) -> List[tuple[str, int]]:
@@ -201,65 +137,6 @@ def _option_detail_lines(opt: "OptionBase", state: dict) -> List[tuple[str, int]
     if not lines:
         lines.append(("No details available.", curses.A_DIM))
     return lines
-
-
-def prepare_help_panel(
-    selected_opt: Optional["OptionBase"],
-    state: dict,
-    wrap_width: int,
-    available_rows: int,
-    ui_state: dict,
-    height: int,
-) -> tuple[str, List[tuple[str, int]], bool]:
-    if selected_opt is None:
-        ui_state["help_max_offset"] = 0
-        ui_state["help_visible_lines"] = 0
-        ui_state["help_total_lines"] = 0
-        ui_state.setdefault("help_offset", 0)
-        return ("Selected: (none)", [], False)
-
-    opt_name = getattr(selected_opt, "name", None)
-    if not opt_name:
-        opt_name = selected_opt.__class__.__name__.replace("Option", "")
-        opt_name = opt_name.replace("_", " ").title()
-    header_text = f"Selected: {opt_name}"
-
-    detail_pairs = _option_detail_lines(selected_opt, state)
-    full_help_lines: List[tuple[str, int]] = []
-    for raw, attr in detail_pairs:
-        style = attr or curses.A_NORMAL
-        if raw == "":
-            full_help_lines.append(("", style))
-            continue
-        wrapped = textwrap.wrap(raw, wrap_width) or [""]
-        for line in wrapped:
-            full_help_lines.append((line, style))
-
-    max_preview = max(5, min(10, height // 2))
-    show_full_help = ui_state.get("show_full_help", False)
-    help_source = full_help_lines if show_full_help else full_help_lines[:max_preview]
-
-    ui_state["help_total_lines"] = len(help_source)
-    ui_state.setdefault("help_offset", 0)
-    available_rows = max(0, available_rows)
-    max_offset = max(0, len(help_source) - available_rows)
-    help_offset = min(max(0, ui_state.get("help_offset", 0)), max_offset)
-    ui_state["help_offset"] = help_offset
-    ui_state["help_max_offset"] = max_offset
-    visible_help = help_source[help_offset : help_offset + available_rows]
-    ui_state["help_visible_lines"] = len(visible_help)
-
-    indicator = ""
-    if help_offset > 0:
-        indicator += "↑"
-    if help_offset < max_offset:
-        indicator += "↓"
-    if not show_full_help and len(help_source) < len(full_help_lines):
-        indicator += "+"
-    if indicator:
-        header_text = f"{header_text} ({indicator})"
-
-    return (header_text, visible_help, True)
 
 
 @dataclass
@@ -393,7 +270,7 @@ class InputOption(OptionBase):
         state: dict,
         stdscr: "curses._CursesWindow",
     ) -> Tuple[bool, Optional[str]]:
-        if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+        if key in KEYS.CONFIRM:
             self._edit(stdscr, state)
         return False, None
 
@@ -575,7 +452,7 @@ class ToggleOption(OptionBase):
         state: dict,
         stdscr: "curses._CursesWindow",
     ) -> Tuple[bool, Optional[str]]:
-        if key in (curses.KEY_ENTER, ord("\n"), ord("\r"), ord(" "), ord("t")):
+        if key in KEYS.CONFIRM or key in (ord(" "), ord("t")):
             state[self.key] = not bool(state.get(self.key))
         return False, None
 
@@ -657,12 +534,12 @@ class ChoiceOption(OptionBase):
         count = len(self._choices)
         if count == 0:
             return False, None
-        if key in (curses.KEY_LEFT, ord("h")):
+        if key in KEYS.NAV_LEFT:
             for _ in range(count):
                 self._index = (self._index - 1) % count
                 if self._choices[self._index].enabled:
                     break
-        elif key in (curses.KEY_RIGHT, ord("l"), ord(" ")):
+        elif key in KEYS.NAV_RIGHT:
             for _ in range(count):
                 self._index = (self._index + 1) % count
                 if self._choices[self._index].enabled:
@@ -777,7 +654,7 @@ class ActionOption(OptionBase):
         state: dict,
         stdscr: "curses._CursesWindow",
     ) -> Tuple[bool, Optional[str]]:
-        if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+        if key in KEYS.CONFIRM:
             return self._action(state)
         return False, None
 
@@ -793,6 +670,18 @@ class ActionOption(OptionBase):
 
 def shell_join(parts: Iterable[str]) -> str:
     return " ".join(shlex.quote(str(x)) for x in parts)
+
+
+def status_line(state: LoadModelDistState, ui_state: UIState) -> str:
+    status = state.status or ""
+    if ui_state.scanning:
+        frames = UI.SPINNER_FRAMES
+        frame = frames[int(time.time() * 4) % len(frames)]
+        scan_text = ui_state.scan_message or STRINGS["scan_start"]
+        if status and status != scan_text:
+            return f"{frame} {scan_text} | {status}"
+        return f"{frame} {scan_text}"
+    return status
 
 
 def list_local_gguf(models_dir: Path) -> List[str]:
@@ -857,37 +746,83 @@ def parse_hosts(hosts: str) -> str:
     entries = [h.strip() for h in hosts.split(",") if h.strip()]
     if not entries:
         raise ValueError("At least one RPC host must be provided (format: host:port).")
-    return ",".join(entries)
+    normalized: List[str] = []
+    for entry in entries:
+        host, sep, port = entry.rpartition(":")
+        if not sep:
+            raise ValueError(f"RPC host entry missing port: {entry}")
+        host = host.strip()
+        if not host:
+            raise ValueError(f"RPC host entry missing host: {entry}")
+        port_result = validate_port(port, default=None, name="RPC port")
+        if port_result.error or port_result.value is None:
+            detail = port_result.error or "Invalid RPC port"
+            raise ValueError(f"{detail} for host entry: {entry}")
+        normalized.append(f"{host}:{port_result.value}")
+    return ",".join(normalized)
+
+
+def parse_int(
+    value: str | None,
+    *,
+    default: Optional[int] = None,
+    name: str = "value",
+    min_value: Optional[int] = None,
+    max_value: Optional[int] = None,
+) -> int:
+    result = validate_int(
+        value,
+        default=default,
+        name=name,
+        min_value=min_value,
+        max_value=max_value,
+    )
+    if result.error:
+        raise ValueError(result.error)
+    return int(result.value)
 
 
 def build_llama_command(state: dict) -> List[str]:
     ensure_binary(LLAMA_CLI)
-    model = state.get("model_path", "").strip()
-    if not model:
+    model_raw = (state.get("model_path") or "").strip()
+    if not model_raw:
         raise ValueError("Model path is required.")
+    model_result = validate_path(model_raw, must_exist=True, name="Model path")
+    if model_result.error or model_result.value is None:
+        raise ValueError(model_result.error or "Model path is invalid.")
+    model = str(model_result.value)
     host_list = parse_hosts(state.get("rpc_hosts", ""))
 
     cmd: List[str] = [str(LLAMA_CLI), "-m", model, "--rpc", host_list]
 
     ctx = state.get("ctx_size", "").strip()
     if ctx:
-        cmd += ["--ctx-size", ctx]
+        ctx_int = parse_int(ctx, name="--ctx-size", min_value=1)
+        cmd += ["--ctx-size", str(ctx_int)]
     ngl = state.get("n_gpu_layers", "").strip()
     if ngl:
-        cmd += ["-ngl", ngl]
+        ngl_int = parse_int(ngl, name="-ngl", min_value=0)
+        cmd += ["-ngl", str(ngl_int)]
     batch = state.get("batch_size", "").strip()
     if batch:
-        cmd += ["-b", batch]
+        batch_int = parse_int(batch, name="-b", min_value=1)
+        cmd += ["-b", str(batch_int)]
     cache_dir = state.get("tensor_cache", "").strip()
     if cache_dir:
         cmd += ["-c", cache_dir]
     extra = state.get("extra_flags", "").strip()
     if extra:
-        cmd.extend(shlex.split(extra))
+        extra_result = validate_split_extra_flags(extra)
+        if extra_result.error:
+            raise ValueError(extra_result.error)
+        cmd.extend(extra_result.value or [])
     prompt_file = state.get("prompt_file", "").strip()
     prompt_text = state.get("prompt_text", "").strip()
     if prompt_file:
-        cmd += ["-f", prompt_file]
+        prompt_result = validate_path(prompt_file, must_exist=True, name="Prompt file")
+        if prompt_result.error or prompt_result.value is None:
+            raise ValueError(prompt_result.error or "Prompt file is invalid.")
+        cmd += ["-f", str(prompt_result.value)]
     elif prompt_text:
         cmd += ["-p", prompt_text]
     return cmd
@@ -895,8 +830,11 @@ def build_llama_command(state: dict) -> List[str]:
 
 def build_rpc_command(state: dict) -> List[str]:
     ensure_binary(RPC_SERVER)
-    port = state.get("worker_port", DEFAULT_RPC_PORT).strip() or DEFAULT_RPC_PORT
-    host = state.get("worker_host", "0.0.0.0").strip() or "0.0.0.0"
+    port_result = validate_port(state.get("worker_port"), default=int(DEFAULT_RPC_PORT), name="RPC port")
+    if port_result.error or port_result.value is None:
+        raise ValueError(port_result.error or "Invalid RPC port")
+    port = str(port_result.value)
+    host = (state.get("worker_host") or "0.0.0.0").strip() or "0.0.0.0"
     cmd: List[str] = [str(RPC_SERVER), "-p", port, "--host", host]
     cache = state.get("worker_cache", "").strip()
     if cache:
@@ -916,7 +854,7 @@ def build_cuda_visible_devices(value: str | None) -> tuple[Optional[str], Option
     return ",".join(str(idx) for idx in indices), None
 
 
-def start_worker_process(state: dict) -> subprocess.Popen:
+def start_worker_process(state: LoadModelDistState) -> subprocess.Popen:
     cmd = build_rpc_command(state)
     env = os.environ.copy()
     cuda_devices, err = build_cuda_visible_devices(state.get("worker_devices"))
@@ -930,7 +868,7 @@ def start_worker_process(state: dict) -> subprocess.Popen:
         raise FileNotFoundError(str(exc)) from exc
     except Exception as exc:
         raise RuntimeError(f"Failed to start rpc-server: {exc}") from exc
-    return proc
+    return register_process(proc)
 
 
 def merge_hosts(state: dict, hosts: Iterable[str]) -> None:
@@ -982,11 +920,11 @@ def _list_private_networks() -> Tuple[List[ipaddress.IPv4Network], List[str]]:
     return uniq, local_ips
 
 
-def discover_network_workers(port: str, timeout: float = SCAN_TIMEOUT) -> List[str]:
-    try:
-        port_int = int(port)
-    except ValueError:
+def discover_network_workers(port: str, timeout: float = UI.SCAN_TIMEOUT) -> List[str]:
+    port_result = validate_port(port, default=None, name="RPC port")
+    if port_result.error or port_result.value is None:
         return []
+    port_int = int(port_result.value)
     networks, local_ips = _list_private_networks()
     if not networks:
         return []
@@ -1013,19 +951,61 @@ def discover_network_workers(port: str, timeout: float = SCAN_TIMEOUT) -> List[s
     return sorted(set(discovered))
 
 
+def start_network_scan(state: LoadModelDistState, ui_state: UIState) -> None:
+    if ui_state.scanning:
+        return
+    port_result = validate_port(state.worker_port, default=None, name="RPC port")
+    if port_result.error or port_result.value is None:
+        state.status = port_result.error or "Invalid RPC port"
+        append_log(ui_state, state.status)
+        return
+    port_str = str(port_result.value)
+
+    ui_state.scanning = True
+    ui_state.scan_message = STRINGS["scan_start"]
+    ui_state.scan_start = time.time()
+    append_log(ui_state, STRINGS["scan_start"])
+
+    def scan_thread() -> None:
+        try:
+            discovered = discover_network_workers(port_str)
+            if discovered:
+                merge_hosts(state, discovered)
+                msg = f"Discovered {len(discovered)} worker(s) on port {port_str}."
+            else:
+                msg = f"No rpc-server instances found on port {port_str}."
+            state.status = msg
+            append_log(ui_state, msg)
+        finally:
+            elapsed = max(time.time() - (ui_state.scan_start or time.time()), 0.01)
+            append_log(ui_state, f"{STRINGS['scan_complete']} ({elapsed:.1f}s)")
+            ui_state.scanning = False
+            ui_state.scan_message = ""
+            ui_state.scan_start = None
+
+    threading.Thread(target=scan_thread, daemon=True).start()
+
+
 def action_launch(state: dict) -> Tuple[bool, Optional[str]]:
     messages: List[str] = []
     if state.get("local_worker"):
         proc = state.get("worker_process")
+        if proc and proc.poll() is not None:
+            unregister_process(proc)
+            state["worker_process"] = None
+            proc = None
         if not proc or proc.poll() is not None:
             try:
                 proc = start_worker_process(state)
                 state["worker_process"] = proc
                 messages.append(f"Started local rpc-server (pid {proc.pid}).")
-            except (FileNotFoundError, RuntimeError) as exc:
+            except (FileNotFoundError, RuntimeError, ValueError) as exc:
                 return False, str(exc)
-        port = state.get("worker_port", DEFAULT_RPC_PORT).strip() or DEFAULT_RPC_PORT
-        host = state.get("worker_host", "0.0.0.0").strip() or "0.0.0.0"
+        port_result = validate_port(state.get("worker_port"), default=int(DEFAULT_RPC_PORT), name="RPC port")
+        if port_result.error or port_result.value is None:
+            return False, port_result.error or "Invalid RPC port"
+        port = str(port_result.value)
+        host = (state.get("worker_host") or "0.0.0.0").strip() or "0.0.0.0"
         if host in ("0.0.0.0", "::"):
             merge_hosts(state, [f"127.0.0.1:{port}"])
         else:
@@ -1060,15 +1040,22 @@ def action_start_worker(state: dict) -> Tuple[bool, Optional[str]]:
     if not state.get("local_worker", False):
         return False, "Enable 'Launch local rpc-server' toggle first."
     proc = state.get("worker_process")
+    if proc and proc.poll() is not None:
+        unregister_process(proc)
+        state["worker_process"] = None
+        proc = None
     if proc and proc.poll() is None:
         return False, f"rpc-server already running (pid {proc.pid})."
     try:
         proc = start_worker_process(state)
-    except (FileNotFoundError, RuntimeError) as exc:
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
         return False, str(exc)
     state["worker_process"] = proc
-    port = state.get("worker_port", DEFAULT_RPC_PORT).strip() or DEFAULT_RPC_PORT
-    host = state.get("worker_host", "0.0.0.0").strip() or "0.0.0.0"
+    port_result = validate_port(state.get("worker_port"), default=int(DEFAULT_RPC_PORT), name="RPC port")
+    if port_result.error or port_result.value is None:
+        return False, port_result.error or "Invalid RPC port"
+    port = str(port_result.value)
+    host = (state.get("worker_host") or "0.0.0.0").strip() or "0.0.0.0"
     if host in ("0.0.0.0", "::"):
         merge_hosts(state, [f"127.0.0.1:{port}"])
     else:
@@ -1080,16 +1067,14 @@ def action_refresh_models(state: dict) -> Tuple[bool, Optional[str]]:
     return refresh_local_models(state)
 
 
-def action_scan_network(state: dict) -> Tuple[bool, Optional[str]]:
-    port = state.get("worker_port", DEFAULT_RPC_PORT).strip() or DEFAULT_RPC_PORT
-    hosts = discover_network_workers(port)
-    if hosts:
-        merge_hosts(state, hosts)
-        return False, f"Discovered {len(hosts)} worker(s) on port {port}."
-    return False, f"No rpc-server instances found on port {port}."
+def action_scan_network(state: LoadModelDistState, ui_state: UIState) -> Tuple[bool, Optional[str]]:
+    if ui_state.scanning:
+        return False, "Network scan already running."
+    start_network_scan(state, ui_state)
+    return False, "Scanning network..."
 
 
-def build_options(state: dict) -> List[OptionBase]:
+def build_options(state: LoadModelDistState, ui_state: UIState) -> List[OptionBase]:
     return [
         InputOption(
             "models_dir",
@@ -1114,7 +1099,7 @@ def build_options(state: dict) -> List[OptionBase]:
         ActionOption(
             "Scan network for rpc-server",
             "Probe private subnets for rpc-server instances listening on the configured port.",
-            action_scan_network,
+            lambda st: action_scan_network(st, ui_state),
         ),
         InputOption(
             "model_path",
@@ -1223,8 +1208,8 @@ def _draw_wide_layout(
     option_info: List[tuple[int, OptionBase, int]],
     selected_idx: int,
     scroll: int,
-    state: dict,
-    ui_state: dict,
+    state: LoadModelDistState,
+    ui_state: UIState,
     status: str,
     height: int,
     width: int,
@@ -1233,12 +1218,13 @@ def _draw_wide_layout(
     status_y = max(0, height - 2)
     instructions_y = max(0, height - 1)
     body_height = max(0, status_y - body_top)
-    left_margin = 2
-    column_gap = 2
-    min_left_width = 26
-    min_right_width = 32
+    layout = LOADMODEL_DIST_LAYOUT
+    left_margin = layout.left_margin
+    column_gap = layout.column_gap
+    min_left_width = layout.min_left_width
+    min_right_width = layout.min_right_width
 
-    left_width = max(min_left_width, int(width * 0.55))
+    left_width = max(min_left_width, int(width * layout.left_ratio))
     max_left = width - (left_margin + column_gap + min_right_width + 2)
     if left_width > max_left:
         left_width = max(min_left_width, max_left)
@@ -1301,14 +1287,21 @@ def _draw_wide_layout(
         arrow_row = max(body_top, min(last_render_row, height - 1))
         stdscr.addnstr(arrow_row, left_margin - 1, "↓", 1, arrow_attr)
 
+    if first_rendered is not None and last_rendered is not None:
+        visible_count = max(1, last_rendered - first_rendered + 1)
+        indicator = format_scroll_indicator(first_rendered, total_visible, visible_count)
+        left_panel_right = max(left_margin, right_start - 2)
+        if indicator and left_panel_right > left_margin:
+            indicator_x = max(left_margin, left_panel_right - len(indicator) + 1)
+            stdscr.addnstr(body_top, indicator_x, indicator, len(indicator), curses.A_DIM)
+
     separator_x = right_start - 1
     if 0 <= separator_x < width:
         stdscr.vline(body_top, separator_x, curses.ACS_VLINE, max(0, min(body_height, height - body_top)))
 
     wrap_width = max(10, right_width)
     right_y = body_top
-    focus_area = ui_state.get("focus_area", 0)
-    help_focus = focus_area == 1
+    help_focus = ui_state.focus_area == 1
 
     if status:
         for line in textwrap.wrap(status, wrap_width):
@@ -1322,9 +1315,20 @@ def _draw_wide_layout(
     selected_opt = options[selected_idx] if 0 <= selected_idx < len(options) else None
     if right_y < status_y:
         available_rows = status_y - (right_y + 1)
+        if selected_opt is None:
+            header_text = "Selected: (none)"
+            detail_pairs: List[tuple[str, int]] = []
+        else:
+            opt_name = getattr(selected_opt, "name", None)
+            if not opt_name:
+                opt_name = selected_opt.__class__.__name__.replace("Option", "")
+                opt_name = opt_name.replace("_", " ").title()
+            header_text = f"Selected: {opt_name}"
+            detail_pairs = _option_detail_lines(selected_opt, state)
+
         header_text, visible_help, has_selection = prepare_help_panel(
-            selected_opt,
-            state,
+            header_text,
+            detail_pairs,
             wrap_width,
             available_rows,
             ui_state,
@@ -1340,17 +1344,17 @@ def _draw_wide_layout(
             stdscr.addnstr(right_y, right_start, line[:wrap_width], wrap_width, line_attr)
             right_y += 1
         if not has_selection:
-            ui_state["help_max_offset"] = 0
-            ui_state["help_visible_lines"] = 0
+            ui_state.help_max_offset = 0
+            ui_state.help_visible_lines = 0
     else:
-        ui_state["help_max_offset"] = 0
-        ui_state["help_visible_lines"] = 0
-        ui_state.setdefault("help_total_lines", 0)
+        ui_state.help_max_offset = 0
+        ui_state.help_visible_lines = 0
+        ui_state.help_total_lines = 0
 
     if status_y >= 0:
         stdscr.addnstr(status_y, 2, status[: max(1, width - 4)], max(1, width - 4), curses.color_pair(2) | curses.A_BOLD)
     logs_start = max(body_top, status_y - 3)
-    draw_logs(stdscr, ui_state, logs_start, width, height)
+    draw_logs(stdscr, ui_state, logs_start, width, height, STRINGS["logs_heading"])
     if instructions_y >= 0:
         instructions = STRINGS["instructions"]
         stdscr.addnstr(instructions_y, 2, instructions[: max(1, width - 4)], max(1, width - 4), curses.A_DIM)
@@ -1364,8 +1368,8 @@ def _draw_tablet_layout(
     option_info: List[tuple[int, OptionBase, int]],
     selected_idx: int,
     scroll: int,
-    state: dict,
-    ui_state: dict,
+    state: LoadModelDistState,
+    ui_state: UIState,
     status: str,
     height: int,
     width: int,
@@ -1429,16 +1433,32 @@ def _draw_tablet_layout(
     if has_more_below and last_render_row is not None:
         stdscr.addnstr(min(body_top + body_height - 1, last_render_row), 0, "↓", 1, arrow_attr)
 
+    if first_rendered is not None and last_rendered is not None:
+        visible_count = max(1, last_rendered - first_rendered + 1)
+        indicator = format_scroll_indicator(first_rendered, total_visible, visible_count)
+        if indicator and width > len(indicator) + 4:
+            stdscr.addnstr(body_top, max(2, width - len(indicator) - 2), indicator, len(indicator), curses.A_DIM)
+
     wrap_width = max(10, width - 4)
-    focus_area = ui_state.get("focus_area", 0)
-    help_focus = focus_area == 1
+    help_focus = ui_state.focus_area == 1
     help_start = body_top + body_height
     selected_opt = options[selected_idx] if 0 <= selected_idx < len(options) else None
     if help_start < status_y:
         available_rows = status_y - (help_start + 1)
+        if selected_opt is None:
+            header_text = "Selected: (none)"
+            detail_pairs: List[tuple[str, int]] = []
+        else:
+            opt_name = getattr(selected_opt, "name", None)
+            if not opt_name:
+                opt_name = selected_opt.__class__.__name__.replace("Option", "")
+                opt_name = opt_name.replace("_", " ").title()
+            header_text = f"Selected: {opt_name}"
+            detail_pairs = _option_detail_lines(selected_opt, state)
+
         header_text, visible_help, has_selection = prepare_help_panel(
-            selected_opt,
-            state,
+            header_text,
+            detail_pairs,
             wrap_width,
             available_rows,
             ui_state,
@@ -1455,17 +1475,17 @@ def _draw_tablet_layout(
             stdscr.addnstr(row, 2, line[: max(1, width - 4)], max(1, width - 4), line_attr)
             row += 1
         if not has_selection:
-            ui_state["help_max_offset"] = 0
-            ui_state["help_visible_lines"] = 0
+            ui_state.help_max_offset = 0
+            ui_state.help_visible_lines = 0
     else:
-        ui_state["help_max_offset"] = 0
-        ui_state["help_visible_lines"] = 0
-        ui_state.setdefault("help_total_lines", 0)
+        ui_state.help_max_offset = 0
+        ui_state.help_visible_lines = 0
+        ui_state.help_total_lines = 0
 
     if status and status_y >= 0:
         stdscr.addnstr(status_y, 2, status[: max(1, width - 4)], max(1, width - 4), curses.color_pair(2) | curses.A_BOLD)
     logs_start = max(body_top, status_y - 3)
-    draw_logs(stdscr, ui_state, logs_start, width, height)
+    draw_logs(stdscr, ui_state, logs_start, width, height, STRINGS["logs_heading"])
     if instructions_y >= 0:
         instructions = STRINGS["instructions"]
         stdscr.addnstr(instructions_y, 2, instructions[: max(1, width - 4)], max(1, width - 4), curses.A_DIM)
@@ -1511,8 +1531,8 @@ def draw_screen(
     option_info: List[tuple[int, OptionBase, int]],
     selected_idx: int,
     scroll: int,
-    state: dict,
-    ui_state: dict,
+    state: LoadModelDistState,
+    ui_state: UIState,
 ) -> Tuple[Optional[int], Optional[int]]:
     stdscr.erase()
     height, width = stdscr.getmaxyx()
@@ -1528,9 +1548,10 @@ def draw_screen(
     instructions = STRINGS["instructions"]
     stdscr.addnstr(height - 1, 2, instructions[: max(1, width - 4)], max(1, width - 4), curses.A_DIM)
 
-    status = state.get("status", "")
+    status = status_line(state, ui_state)
 
-    if width >= 140:
+    layout = layout_mode(width)
+    if layout == "wide":
         first_rendered, last_rendered = _draw_wide_layout(
             stdscr,
             options,
@@ -1546,7 +1567,7 @@ def draw_screen(
         stdscr.refresh()
         return first_rendered, last_rendered
 
-    if width >= 80:
+    if layout == "tablet":
         first_rendered, last_rendered = _draw_tablet_layout(
             stdscr,
             options,
@@ -1616,16 +1637,32 @@ def draw_screen(
         arrow_row = max(body_top, min(last_render_row, body_bottom))
         stdscr.addnstr(arrow_row, 0, "↓", 1, arrow_attr)
 
+    if first_rendered is not None and last_rendered is not None:
+        visible_count = max(1, last_rendered - first_rendered + 1)
+        indicator = format_scroll_indicator(first_rendered, len(option_info), visible_count)
+        if indicator and width > len(indicator) + 4:
+            stdscr.addnstr(body_top, max(2, width - len(indicator) - 2), indicator, len(indicator), curses.A_DIM)
+
     wrap_width = max(10, width - 4)
-    focus_area = ui_state.get("focus_area", 0)
-    help_focus = focus_area == 1
+    help_focus = ui_state.focus_area == 1
     selected_opt = options[selected_idx] if 0 <= selected_idx < len(options) else None
     help_start = body_bottom + 1
     if help_start < status_y:
         available_rows = status_y - (help_start + 1)
+        if selected_opt is None:
+            header_text = "Selected: (none)"
+            detail_pairs: List[tuple[str, int]] = []
+        else:
+            opt_name = getattr(selected_opt, "name", None)
+            if not opt_name:
+                opt_name = selected_opt.__class__.__name__.replace("Option", "")
+                opt_name = opt_name.replace("_", " ").title()
+            header_text = f"Selected: {opt_name}"
+            detail_pairs = _option_detail_lines(selected_opt, state)
+
         header_text, visible_help, has_selection = prepare_help_panel(
-            selected_opt,
-            state,
+            header_text,
+            detail_pairs,
             wrap_width,
             available_rows,
             ui_state,
@@ -1642,17 +1679,17 @@ def draw_screen(
             stdscr.addnstr(row, 2, line[: max(1, width - 4)], max(1, width - 4), line_attr)
             row += 1
         if not has_selection:
-            ui_state["help_max_offset"] = 0
-            ui_state["help_visible_lines"] = 0
+            ui_state.help_max_offset = 0
+            ui_state.help_visible_lines = 0
     else:
-        ui_state["help_max_offset"] = 0
-        ui_state["help_visible_lines"] = 0
-        ui_state.setdefault("help_total_lines", 0)
+        ui_state.help_max_offset = 0
+        ui_state.help_visible_lines = 0
+        ui_state.help_total_lines = 0
 
     if status:
         stdscr.addnstr(status_y, 2, status[: max(1, width - 4)], max(1, width - 4), curses.color_pair(2) | curses.A_BOLD)
     logs_start = max(body_top, status_y - 3)
-    draw_logs(stdscr, ui_state, logs_start, width, height)
+    draw_logs(stdscr, ui_state, logs_start, width, height, STRINGS["logs_heading"])
     stdscr.refresh()
     return first_rendered, last_rendered
 
@@ -1666,68 +1703,21 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    state: dict = {
-        "models_dir": str(MODELS_DIR),
-        "local_models": None,
-        "selected_local_model": "",
-        "model_path": "",
-        "rpc_hosts": "",
-        "ctx_size": "",
-        "n_gpu_layers": "999",
-        "batch_size": "",
-        "tensor_cache": "",
-        "prompt_file": "",
-        "prompt_text": "",
-        "extra_flags": "",
-        "local_worker": False,
-        "worker_host": "0.0.0.0",
-        "worker_port": DEFAULT_RPC_PORT,
-        "worker_cache": "",
-        "worker_devices": "",
-        "worker_process": None,
-        "discovered_hosts": [],
-        "status": "",
-    }
+    state = LoadModelDistState()
 
-    saved_values = load_saved_state()
+    ui_state = UIState()
+
+    saved_values = load_saved_state(CONFIG_PATH, ui_state)
     if saved_values:
-        state.update(saved_values)
-
-    ui_state = {
-        "focus_area": 0,
-        "show_full_help": False,
-        "logs": deque(maxlen=LOG_HISTORY),
-        "status_message": None,
-        "help_offset": 0,
-        "logs_offset": 0,
-        "help_max_offset": 0,
-        "logs_max_offset": 0,
-        "help_visible_lines": 0,
-        "logs_visible_rows": 0,
-        "last_selected": None,
-    }
+        state.update_from_dict(saved_values)
 
     _, initial_msg = refresh_local_models(state)
     if initial_msg:
         append_log(ui_state, initial_msg)
 
-    append_log(ui_state, STRINGS["scan_start"])
-    scan_start = time.time()
-    discovered = discover_network_workers(state.get("worker_port", DEFAULT_RPC_PORT) or DEFAULT_RPC_PORT)
-    if discovered:
-        merge_hosts(state, discovered)
-        msg = f"Discovered {len(discovered)} worker(s) on port {state.get('worker_port', DEFAULT_RPC_PORT)}."
-        append_log(ui_state, msg)
-        state["status"] = msg
-    else:
-        msg = f"No rpc-server instances detected on port {state.get('worker_port', DEFAULT_RPC_PORT)}."
-        append_log(ui_state, msg)
-        state["status"] = msg
-    elapsed = max(time.time() - scan_start, 0.01)
-    append_log(ui_state, f"{STRINGS['scan_complete']} ({elapsed:.1f}s)")
-
-    options = build_options(state)
-    apply_saved_values(options, state, saved_values)
+    options = build_options(state, ui_state)
+    apply_saved_values(options, saved_values, state)
+    start_network_scan(state, ui_state)
     selected_idx = first_visible(options, state)
     scroll = 0
 
@@ -1740,8 +1730,8 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
             stdscr.addnstr(1, 0, "Press 'q' to quit.", max(1, width - 1), curses.A_DIM)
             stdscr.refresh()
             key = stdscr.getch()
-            if key in (ord("q"), ord("Q")):
-                save_state(options, state)
+            if key in KEYS.QUIT:
+                save_state(CONFIG_PATH, options, state=state, ui_state=ui_state)
                 return
             continue
 
@@ -1754,12 +1744,12 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
         if selected_visible_idx < scroll:
             scroll = selected_visible_idx
 
-        if ui_state.get("last_selected") != selected_idx:
-            ui_state["help_offset"] = 0
-            ui_state["last_selected"] = selected_idx
+        if ui_state.last_selected != selected_idx:
+            ui_state.help_offset = 0
+            ui_state.last_selected = selected_idx
 
-        if ui_state.get("status_message") is not None:
-            state["status"] = ui_state["status_message"]
+        if ui_state.status_message is not None:
+            state.status = ui_state.status_message
 
         first_rendered, last_rendered = draw_screen(
             stdscr,
@@ -1770,7 +1760,7 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
             state,
             ui_state,
         )
-        ui_state["status_message"] = None
+        ui_state.status_message = None
 
         if selected_visible_idx < scroll:
             scroll = selected_visible_idx
@@ -1783,118 +1773,118 @@ def run_tui(stdscr: "curses._CursesWindow") -> None:
             scroll = max(0, selected_visible_idx - span + 1)
 
         key = stdscr.getch()
-        if key in (ord("q"), ord("Q")):
-            save_state(options, state)
+        if key in KEYS.QUIT:
+            save_state(CONFIG_PATH, options, state=state, ui_state=ui_state)
             return
         if key in (curses.KEY_RESIZE,):
             continue
-        if key == 9:  # Tab
-            ui_state["focus_area"] = (ui_state.get("focus_area", 0) + 1) % 3
+        if key in KEYS.TAB:
+            ui_state.focus_area = (ui_state.focus_area + 1) % 3
             continue
-        if key == ord("?"):
-            ui_state["show_full_help"] = not ui_state.get("show_full_help", False)
-            ui_state["help_offset"] = 0
-            append_log(ui_state, "Expanded help" if ui_state["show_full_help"] else "Collapsed help")
+        if key in KEYS.TOGGLE_HELP:
+            ui_state.show_full_help = not ui_state.show_full_help
+            ui_state.help_offset = 0
+            append_log(ui_state, "Expanded help" if ui_state.show_full_help else "Collapsed help")
             continue
 
-        focus_area = ui_state.get("focus_area", 0)
+        focus_area = ui_state.focus_area
         if focus_area == 0:
-            if key in (curses.KEY_DOWN, ord("j")):
+            if key in KEYS.NAV_DOWN:
                 selected_idx = next_visible(options, state, selected_idx, +1)
                 continue
-            if key in (curses.KEY_UP, ord("k")):
+            if key in KEYS.NAV_UP:
                 selected_idx = next_visible(options, state, selected_idx, -1)
                 continue
-            if key in (curses.KEY_PPAGE,):
+            if key in KEYS.PAGE_UP:
                 page = max(1, len(option_info) // 3 or 1)
                 scroll = max(0, scroll - page)
                 continue
-            if key in (curses.KEY_NPAGE,):
+            if key in KEYS.PAGE_DOWN:
                 page = max(1, len(option_info) // 3 or 1)
                 scroll = min(len(option_info) - 1, scroll + page)
                 continue
             exit_requested, message = options[selected_idx].handle_key(key, state, stdscr)
             if message:
-                state["status"] = message
+                state.status = message
                 append_log(ui_state, message)
             else:
-                state["status"] = ""
+                state.status = ""
             if exit_requested:
-                save_state(options, state)
+                save_state(CONFIG_PATH, options, state=state, ui_state=ui_state)
                 return
             continue
 
         if focus_area == 1:
-            if key in (curses.KEY_DOWN, ord("j")):
-                ui_state["help_offset"] = min(
-                    ui_state.get("help_max_offset", 0),
-                    ui_state.get("help_offset", 0) + 1,
+            if key in KEYS.NAV_DOWN:
+                ui_state.help_offset = min(
+                    ui_state.help_max_offset,
+                    ui_state.help_offset + 1,
                 )
                 continue
-            if key in (curses.KEY_UP, ord("k")):
-                ui_state["help_offset"] = max(0, ui_state.get("help_offset", 0) - 1)
+            if key in KEYS.NAV_UP:
+                ui_state.help_offset = max(0, ui_state.help_offset - 1)
                 continue
-            if key in (curses.KEY_NPAGE,):
-                step = max(1, ui_state.get("help_visible_lines", 1))
-                ui_state["help_offset"] = min(
-                    ui_state.get("help_max_offset", 0),
-                    ui_state.get("help_offset", 0) + step,
+            if key in KEYS.PAGE_DOWN:
+                step = max(1, ui_state.help_visible_lines)
+                ui_state.help_offset = min(
+                    ui_state.help_max_offset,
+                    ui_state.help_offset + step,
                 )
                 continue
-            if key in (curses.KEY_PPAGE,):
-                step = max(1, ui_state.get("help_visible_lines", 1))
-                ui_state["help_offset"] = max(0, ui_state.get("help_offset", 0) - step)
+            if key in KEYS.PAGE_UP:
+                step = max(1, ui_state.help_visible_lines)
+                ui_state.help_offset = max(0, ui_state.help_offset - step)
                 continue
-            if key in (curses.KEY_HOME,):
-                ui_state["help_offset"] = 0
+            if key in KEYS.HOME:
+                ui_state.help_offset = 0
                 continue
-            if key in (curses.KEY_END,):
-                ui_state["help_offset"] = ui_state.get("help_max_offset", 0)
+            if key in KEYS.END:
+                ui_state.help_offset = ui_state.help_max_offset
                 continue
-            if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+            if key in KEYS.CONFIRM:
                 exit_requested, message = options[selected_idx].handle_key(key, state, stdscr)
                 if message:
-                    state["status"] = message
+                    state.status = message
                     append_log(ui_state, message)
                 if exit_requested:
-                    save_state(options, state)
+                    save_state(CONFIG_PATH, options, state=state, ui_state=ui_state)
                     return
             continue
 
         if focus_area == 2:
-            if key in (curses.KEY_DOWN, ord("j")):
-                ui_state["logs_offset"] = min(
-                    ui_state.get("logs_max_offset", 0),
-                    ui_state.get("logs_offset", 0) + 1,
+            if key in KEYS.NAV_DOWN:
+                ui_state.logs_offset = min(
+                    ui_state.logs_max_offset,
+                    ui_state.logs_offset + 1,
                 )
                 continue
-            if key in (curses.KEY_UP, ord("k")):
-                ui_state["logs_offset"] = max(0, ui_state.get("logs_offset", 0) - 1)
+            if key in KEYS.NAV_UP:
+                ui_state.logs_offset = max(0, ui_state.logs_offset - 1)
                 continue
-            if key in (curses.KEY_NPAGE,):
-                step = max(1, ui_state.get("logs_visible_rows", 1))
-                ui_state["logs_offset"] = min(
-                    ui_state.get("logs_max_offset", 0),
-                    ui_state.get("logs_offset", 0) + step,
+            if key in KEYS.PAGE_DOWN:
+                step = max(1, ui_state.logs_visible_rows)
+                ui_state.logs_offset = min(
+                    ui_state.logs_max_offset,
+                    ui_state.logs_offset + step,
                 )
                 continue
-            if key in (curses.KEY_PPAGE,):
-                step = max(1, ui_state.get("logs_visible_rows", 1))
-                ui_state["logs_offset"] = max(0, ui_state.get("logs_offset", 0) - step)
+            if key in KEYS.PAGE_UP:
+                step = max(1, ui_state.logs_visible_rows)
+                ui_state.logs_offset = max(0, ui_state.logs_offset - step)
                 continue
-            if key in (curses.KEY_HOME,):
-                ui_state["logs_offset"] = ui_state.get("logs_max_offset", 0)
+            if key in KEYS.HOME:
+                ui_state.logs_offset = ui_state.logs_max_offset
                 continue
-            if key in (curses.KEY_END,):
-                ui_state["logs_offset"] = 0
+            if key in KEYS.END:
+                ui_state.logs_offset = 0
                 continue
-            if key in (curses.KEY_ENTER, ord("\n"), ord("\r")):
+            if key in KEYS.CONFIRM:
                 exit_requested, message = options[selected_idx].handle_key(key, state, stdscr)
                 if message:
-                    state["status"] = message
+                    state.status = message
                     append_log(ui_state, message)
                 if exit_requested:
-                    save_state(options, state)
+                    save_state(CONFIG_PATH, options, state=state, ui_state=ui_state)
                     return
             continue
 

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import memory_utils
+from process_utils import register_process, terminate_process, unregister_process
 
 # Optional deps:
 try:
@@ -274,7 +275,8 @@ def launch_llama_server(
 
     info(f"[llama] {shell_join(cmd)}")
     env = os.environ.copy()
-    return subprocess.Popen(cmd, env=env)
+    proc = subprocess.Popen(cmd, env=env)
+    return register_process(proc)
 
 def _wait_for_listen(host: str, port: int, timeout: float = 60.0) -> bool:
     import socket, time
@@ -325,14 +327,8 @@ def launch_llama_server_with_backoff(
         if _wait_for_listen(host, port, timeout=90.0):
             return proc
         # process did not start listening; back off
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        terminate_process(proc)
+        unregister_process(proc)
         if ngl_try <= 0:
             die("llama-server failed to start even with CPU-only; giving up")
         ngl_try = max(0, ngl_try // 2)
@@ -700,6 +696,8 @@ For --rerank (Transformers):
     extra = args.extra or []
     if args.embed:
         extra = ["--embeddings"] + extra
+    if "--flash-attn" not in extra and "-fa" not in extra:
+        extra = ["--flash-attn", "on"] + extra
 
     tensor_split = args.tensor_split
     if tensor_split:
@@ -733,6 +731,8 @@ For --rerank (Transformers):
             proc.wait(timeout=5)
         except Exception:
             proc.kill()
+    finally:
+        unregister_process(proc)
 
 if __name__ == "__main__":
     main()
