@@ -18,4 +18,7 @@ exec python loadmodel.py --llm unsloth/Qwen3.5-35B-A3B-GGUF:Q4_K_XL \
   --n-gpu-layers 999 \
   --tensor-split 50,50 \
   --ctx-size 24576 \
+  --jinja \
+  --reasoning-format deepseek \
+  --no-context-shift \
   --extra "${EXTRA_FLAGS[@]}"
