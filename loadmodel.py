@@ -237,6 +237,10 @@ def launch_llama_server(
     ctx_size: Optional[int],
     n_cpu_moe: Optional[int],
     cpu_moe: bool,
+    mmproj: Optional[str] = None,
+    jinja: bool = False,
+    reasoning_format: Optional[str] = None,
+    no_context_shift: bool = False,
 ) -> subprocess.Popen:
     cmd = [
         str(LLAMA_SERVER), "--model", str(model_path),
@@ -254,6 +258,14 @@ def launch_llama_server(
         cmd.append("--cpu-moe")
     elif n_cpu_moe is not None and n_cpu_moe > 0:
         cmd += ["--n-cpu-moe", str(n_cpu_moe)]
+    if mmproj:
+        cmd += ["--mmproj", str(mmproj)]
+    if jinja:
+        cmd.append("--jinja")
+    if reasoning_format:
+        cmd += ["--reasoning-format", reasoning_format]
+    if no_context_shift:
+        cmd.append("--no-context-shift")
     if extra:
         # map --ubatch <-> --n-ubatch to what your llama-server supports
         primary, _secondary = detect_ubatch_flag()
@@ -304,6 +316,10 @@ def launch_llama_server_with_backoff(
     ctx_size: Optional[int],
     n_cpu_moe: Optional[int],
     cpu_moe: bool,
+    mmproj: Optional[str] = None,
+    jinja: bool = False,
+    reasoning_format: Optional[str] = None,
+    no_context_shift: bool = False,
 ) -> subprocess.Popen:
     """Start llama.cpp. If it fails (e.g., CUDA OOM), retry with fewer GPU layers so the rest stays on CPU RAM."""
     ensure_moe_flags_available(cpu_moe or (n_cpu_moe is not None and n_cpu_moe > 0))
@@ -323,6 +339,10 @@ def launch_llama_server_with_backoff(
             ctx_size,
             n_cpu_moe,
             cpu_moe,
+            mmproj=mmproj,
+            jinja=jinja,
+            reasoning_format=reasoning_format,
+            no_context_shift=no_context_shift,
         )
         if _wait_for_listen(host, port, timeout=90.0):
             return proc
@@ -657,6 +677,10 @@ For --rerank (Transformers):
     p.add_argument("--ctx-size", type=int, default=None)
     p.add_argument("--n-cpu-moe", type=int, default=None, help="Offload experts for the first N layers to CPU (Mixture-of-Experts models)")
     p.add_argument("--cpu-moe", action="store_true", help="Offload all experts to CPU (Mixture-of-Experts models)")
+    p.add_argument("--mmproj", default=None, help="Path to multimodal projector GGUF for vision/image input")
+    p.add_argument("--jinja", action="store_true", help="Enable Jinja chat template (required for thinking toggle)")
+    p.add_argument("--reasoning-format", default=None, help="deepseek|none|qwen3 (how server handles <think> tags)")
+    p.add_argument("--no-context-shift", action="store_true", help="Disable context shift (recommended for thinking models)")
 
     # Transformers reranker runtime
     p.add_argument("--device", default=None, help="cuda|cpu (single device only if device_map!=auto)")
@@ -722,6 +746,10 @@ For --rerank (Transformers):
         ctx_size=args.ctx_size,
         n_cpu_moe=args.n_cpu_moe,
         cpu_moe=args.cpu_moe,
+        mmproj=args.mmproj,
+        jinja=args.jinja,
+        reasoning_format=args.reasoning_format,
+        no_context_shift=args.no_context_shift,
     )
     try:
         proc.wait()
