@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "@/api/client";
 import { Panel } from "@/components/Panel";
 import { ModelSelect } from "@/components/ModelSelect";
+import { PageHeader } from "@/components/PageHeader";
 
 export default function Memory() {
   const gpus = useQuery({
@@ -16,7 +17,10 @@ export default function Memory() {
   const [nGpuLayers, setNGpuLayers] = useState("999");
   const [tensorSplit, setTensorSplit] = useState("");
 
-  const local = useQuery({ queryKey: ["local-models"], queryFn: api.listLocal });
+  const local = useQuery({
+    queryKey: ["local-models"],
+    queryFn: api.listLocal,
+  });
   const modelsDir = local.data?.models_dir;
 
   const plan = useMutation({
@@ -32,7 +36,6 @@ export default function Memory() {
       }),
   });
 
-  // Re-run the plan whenever the inputs change so the preview stays live.
   useEffect(() => {
     if (!modelRef) return;
     const t = setTimeout(() => plan.mutate(), 250);
@@ -41,28 +44,36 @@ export default function Memory() {
   }, [modelRef, ctxSize, nGpuLayers, tensorSplit]);
 
   return (
-    <div className="flex flex-col gap-6">
-      <header>
-        <h2 className="text-2xl font-semibold">Memory planning</h2>
-        <p className="text-sm text-slate-400">
-          Live GPU probe and weight/KV split preview.
-        </p>
-      </header>
+    <div className="flex flex-col gap-8">
+      <PageHeader
+        eyebrow="Resources"
+        title="Memory planning"
+        description="Live GPU probe and weight / KV-cache split preview, powered by memory_utils."
+      />
 
       <Panel title="GPUs">
         <div className="grid gap-3 md:grid-cols-3">
           {gpus.data?.gpus.map((g) => {
-            const used = g.total && g.free != null ? g.total - g.free : null;
-            const pct = g.total && used != null ? Math.round((used / g.total) * 100) : 0;
+            const used =
+              g.total != null && g.free != null ? g.total - g.free : null;
+            const pct =
+              g.total && used != null
+                ? Math.min(100, Math.round((used / g.total) * 100))
+                : 0;
             return (
-              <div key={g.index} className="rounded border border-slate-800 bg-slate-950/40 p-3">
-                <div className="font-medium">#{g.index} {g.name}</div>
-                <div className="mt-1 text-xs text-slate-400">
-                  {g.free_h} free / {g.total_h} total
+              <div key={g.index} className="brand-surface-muted p-4">
+                <div className="flex items-center justify-between">
+                  <div className="font-display text-sm font-semibold text-bone-50">
+                    #{g.index} {g.name}
+                  </div>
+                  <span className="brand-chip">{pct}%</span>
                 </div>
-                <div className="mt-2 h-2 w-full overflow-hidden rounded bg-slate-800">
+                <div className="mt-2 text-[11px] uppercase tracking-wider text-bone-500">
+                  {g.free_h} free · {g.total_h} total
+                </div>
+                <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/5">
                   <div
-                    className="h-full bg-sky-500"
+                    className="h-full rounded-full bg-gradient-to-r from-lime-300 to-lime-500 shadow-[0_0_14px_rgba(213,255,64,0.45)]"
                     style={{ width: `${pct}%` }}
                   />
                 </div>
@@ -70,43 +81,47 @@ export default function Memory() {
             );
           })}
           {gpus.data?.gpus.length === 0 && (
-            <div className="text-sm text-slate-400">No CUDA devices detected.</div>
+            <div className="col-span-full rounded-xl border border-white/5 bg-white/[0.02] p-4 text-sm text-bone-400">
+              No CUDA devices detected.
+            </div>
           )}
         </div>
       </Panel>
 
       <Panel title="Plan preview">
         <form
-          className="grid gap-3 md:grid-cols-2"
+          className="grid gap-4 md:grid-cols-2"
           onSubmit={(e) => {
             e.preventDefault();
             plan.mutate();
           }}
         >
           <div className="flex flex-col gap-1 text-sm md:col-span-2">
-            <span className="text-slate-400">Model (library or HF ref)</span>
+            <span className="brand-label">Model (library or HF ref)</span>
             <ModelSelect value={modelRef} onChange={setModelRef} />
           </div>
           <label className="flex flex-col gap-1 text-sm">
-            <span className="text-slate-400">--ctx-size</span>
+            <span className="brand-label">--ctx-size</span>
             <input
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              className="brand-input"
               value={ctxSize}
               onChange={(e) => setCtxSize(e.target.value)}
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            <span className="text-slate-400">--n-gpu-layers</span>
+            <span className="brand-label">--n-gpu-layers</span>
             <input
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              className="brand-input"
               value={nGpuLayers}
               onChange={(e) => setNGpuLayers(e.target.value)}
             />
           </label>
           <label className="flex flex-col gap-1 text-sm md:col-span-2">
-            <span className="text-slate-400">--tensor-split (blank, "auto", or 50,50)</span>
+            <span className="brand-label">
+              --tensor-split (blank, auto, or 50,50)
+            </span>
             <input
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              className="brand-input"
               value={tensorSplit}
               onChange={(e) => setTensorSplit(e.target.value)}
             />
@@ -114,36 +129,45 @@ export default function Memory() {
           <div className="md:col-span-2">
             <button
               type="submit"
-              className="rounded bg-sky-500 px-4 py-2 text-sm font-medium text-white hover:bg-sky-400"
+              className="brand-btn-primary"
               disabled={plan.isPending}
             >
-              {plan.isPending ? "Computing…" : "Estimate"}
+              {plan.isPending ? "Computing…" : "Re-estimate"}
             </button>
           </div>
         </form>
 
         {plan.data && (
-          <div className="mt-4 space-y-3 text-sm">
-            <ul className="space-y-1">
+          <div className="mt-6 space-y-4 text-sm">
+            <ul className="space-y-1.5 text-bone-200">
               {plan.data.summary.map((line, i) => (
-                <li key={i} className="text-slate-200">{line}</li>
+                <li key={i} className="flex items-start gap-2">
+                  <span className="mt-1.5 h-1 w-1 rounded-full bg-lime-300" />
+                  {line}
+                </li>
               ))}
             </ul>
             {plan.data.gpus.length > 0 && (
-              <div className="mt-3 space-y-2">
-                <div className="text-xs uppercase text-slate-500">Per-GPU split</div>
-                {plan.data.gpus.map((g, i) => (
-                  <div key={i} className="rounded border border-slate-800 p-2">
-                    <div className="font-medium">#{g.info.index} {g.info.name}</div>
-                    <div className="text-xs text-slate-400">
-                      weights {g.weights_h} · kv {g.kv_h}
+              <div className="space-y-2">
+                <div className="brand-label">Per-GPU split</div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {plan.data.gpus.map((g, i) => (
+                    <div key={i} className="brand-surface-muted p-3">
+                      <div className="font-medium text-bone-50">
+                        #{g.info.index} {g.info.name}
+                      </div>
+                      <div className="mt-1 text-[11px] uppercase tracking-wider text-bone-400">
+                        weights{" "}
+                        <span className="text-lime-300">{g.weights_h}</span> ·
+                        kv <span className="text-lime-300">{g.kv_h}</span>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
             {plan.data.warnings.length > 0 && (
-              <div className="mt-3 rounded border border-amber-600/40 bg-amber-900/20 p-2 text-xs text-amber-200">
+              <div className="rounded-xl border border-amber-400/40 bg-amber-400/10 p-3 text-xs text-amber-200">
                 {plan.data.warnings.map((w, i) => (
                   <div key={i}>⚠ {w}</div>
                 ))}
@@ -152,7 +176,7 @@ export default function Memory() {
           </div>
         )}
         {plan.isError && (
-          <div className="mt-4 text-sm text-rose-400">
+          <div className="mt-4 text-sm text-rose-300">
             {(plan.error as Error).message}
           </div>
         )}

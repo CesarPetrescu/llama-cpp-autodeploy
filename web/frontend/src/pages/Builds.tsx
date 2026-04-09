@@ -5,6 +5,7 @@ import { Panel } from "@/components/Panel";
 import { LogPane } from "@/components/LogPane";
 import { StatusBadge } from "@/components/StatusBadge";
 import { useManagedWebSocket } from "@/hooks/useManagedWebSocket";
+import { PageHeader } from "@/components/PageHeader";
 
 function isActiveBuild(status?: BuildRecord["status"]): boolean {
   return status === "running" || status === "cancelling";
@@ -119,41 +120,45 @@ export default function Builds() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <header>
-        <h2 className="text-2xl font-semibold">llama.cpp builds</h2>
-        <p className="text-sm text-slate-400">
-          Trigger and monitor autodevops.py builds. Options are detected live
-          from <code>autodevops.py --help</code>, so unsupported flags are
-          hidden automatically.
-        </p>
-      </header>
+    <div className="flex flex-col gap-8">
+      <PageHeader
+        eyebrow="Toolchain"
+        title="llama.cpp builds"
+        description={
+          <>
+            Trigger and monitor <code className="text-lime-300">autodevops.py</code>{" "}
+            builds. Options are detected live from{" "}
+            <code className="text-lime-300">autodevops.py --help</code>, so
+            unsupported flags are hidden automatically.
+          </>
+        }
+      />
 
       <Panel title="New build">
         {flags.isLoading && (
-          <div className="text-sm text-slate-400">Probing supported flags…</div>
+          <div className="text-sm text-bone-400">Probing supported flags…</div>
         )}
         {flags.isError && (
-          <div className="text-sm text-rose-400">
+          <div className="text-sm text-rose-300">
             Failed to probe supported flags: {(flags.error as Error).message}
           </div>
         )}
-        <form onSubmit={submit} className="grid gap-3 md:grid-cols-3">
+        <form onSubmit={submit} className="grid gap-4 md:grid-cols-3">
           <label className="flex flex-col gap-1 text-sm">
-            <span className="text-slate-400">--ref (tag/branch/commit)</span>
+            <span className="brand-label">--ref (tag/branch/commit)</span>
             <input
               value={ref}
               onChange={(e) => setRef(e.target.value)}
-              className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              className="brand-input"
             />
           </label>
           {forceMmqChoices && (
             <label className="flex flex-col gap-1 text-sm">
-              <span className="text-slate-400">--force-mmq</span>
+              <span className="brand-label">--force-mmq</span>
               <select
                 value={forceMmq}
                 onChange={(e) => setForceMmq(e.target.value)}
-                className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+                className="brand-input"
               >
                 {forceMmqChoices.map((c) => (
                   <option key={c} value={c}>
@@ -165,11 +170,11 @@ export default function Builds() {
           )}
           {blasChoices && (
             <label className="flex flex-col gap-1 text-sm">
-              <span className="text-slate-400">--blas</span>
+              <span className="brand-label">--blas</span>
               <select
                 value={blas}
                 onChange={(e) => setBlas(e.target.value)}
-                className="rounded border border-slate-700 bg-slate-950 px-2 py-1"
+                className="brand-input"
               >
                 {blasChoices.map((c) => (
                   <option key={c} value={c}>
@@ -179,68 +184,77 @@ export default function Builds() {
               </select>
             </label>
           )}
-          {hasFastMath && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={fastMath}
-                onChange={(e) => setFastMath(e.target.checked)}
-              />
-              --fast-math
-            </label>
-          )}
-          {hasDistributed && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={distributed}
-                onChange={(e) => setDistributed(e.target.checked)}
-              />
-              --distributed (RPC)
-            </label>
-          )}
-          {hasCpuOnly && (
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={cpuOnly}
-                onChange={(e) => setCpuOnly(e.target.checked)}
-              />
-              --cpu-only
-            </label>
-          )}
+          <div className="md:col-span-3 flex flex-wrap gap-x-6 gap-y-2 border-t border-white/5 pt-4">
+            {hasFastMath && (
+              <label className="flex items-center gap-2 text-sm text-bone-200">
+                <input
+                  type="checkbox"
+                  checked={fastMath}
+                  onChange={(e) => setFastMath(e.target.checked)}
+                  className="accent-lime-300"
+                />
+                --fast-math
+              </label>
+            )}
+            {hasDistributed && (
+              <label className="flex items-center gap-2 text-sm text-bone-200">
+                <input
+                  type="checkbox"
+                  checked={distributed}
+                  onChange={(e) => setDistributed(e.target.checked)}
+                  className="accent-lime-300"
+                />
+                --distributed (RPC)
+              </label>
+            )}
+            {hasCpuOnly && (
+              <label className="flex items-center gap-2 text-sm text-bone-200">
+                <input
+                  type="checkbox"
+                  checked={cpuOnly}
+                  onChange={(e) => setCpuOnly(e.target.checked)}
+                  className="accent-lime-300"
+                />
+                --cpu-only
+              </label>
+            )}
+          </div>
           <div className="md:col-span-3 flex items-center gap-3">
             <button
               type="submit"
               disabled={start.isPending || flags.isLoading}
-              className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-400 disabled:opacity-50"
+              className="brand-btn-primary"
             >
               {start.isPending ? "Starting…" : "Start build"}
             </button>
             {formError && (
-              <span className="text-sm text-rose-400">{formError}</span>
+              <span className="text-sm text-rose-300">{formError}</span>
             )}
           </div>
         </form>
       </Panel>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-5 lg:grid-cols-3">
         <Panel title="History" className="lg:col-span-1">
-          <ul className="divide-y divide-slate-800 text-sm">
+          <ul className="flex flex-col gap-2">
             {builds.data?.builds.map((b) => (
               <li
                 key={b.id}
-                className={`flex cursor-pointer items-center justify-between gap-2 py-2 ${
-                  selected === b.id ? "text-sky-300" : ""
+                className={`flex cursor-pointer items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition ${
+                  selected === b.id
+                    ? "border-lime-300/40 bg-lime-300/5 text-lime-200"
+                    : "border-white/5 bg-white/[0.02] text-bone-200 hover:border-white/10"
                 }`}
                 onClick={() => setSelected(b.id)}
               >
-                <span className="truncate">{b.id}</span>
+                <span className="truncate font-mono text-[12px]">{b.id}</span>
                 <StatusBadge status={b.status} />
               </li>
             ))}
             {builds.data?.builds.length === 0 && (
-              <li className="py-4 text-center text-slate-500">No builds yet.</li>
+              <li className="py-6 text-center text-sm text-bone-500">
+                No builds yet.
+              </li>
             )}
           </ul>
         </Panel>
@@ -253,11 +267,15 @@ export default function Builds() {
                 <StatusBadge status={selectedBuild.status} />
                 {isActiveBuild(selectedBuild.status) && (
                   <button
-                    className="rounded bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-60"
-                    disabled={selectedBuild.status === "cancelling" || stop.isPending}
+                    className="brand-btn-warning px-3 py-1.5 text-xs"
+                    disabled={
+                      selectedBuild.status === "cancelling" || stop.isPending
+                    }
                     onClick={() => stop.mutate(selectedBuild.id)}
                   >
-                    {selectedBuild.status === "cancelling" ? "Cancelling…" : "Cancel build"}
+                    {selectedBuild.status === "cancelling"
+                      ? "Cancelling…"
+                      : "Cancel build"}
                   </button>
                 )}
               </>
@@ -267,15 +285,15 @@ export default function Builds() {
         >
           {selected ? (
             <>
-              <div className="mb-2 text-xs text-slate-400">
+              <div className="mb-2 text-[11px] uppercase tracking-wider text-bone-500">
                 {isActiveBuild(selectedBuild?.status)
-                  ? `Log stream: ${socket.status}`
+                  ? `Log stream · ${socket.status}`
                   : "Viewing durable log history"}
               </div>
               <LogPane lines={lines} height="60vh" />
             </>
           ) : (
-            <div className="text-sm text-slate-500">
+            <div className="text-sm text-bone-500">
               Start a new build or select one from the history to view its log.
             </div>
           )}

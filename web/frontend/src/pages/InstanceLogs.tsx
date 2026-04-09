@@ -52,28 +52,32 @@ export default function InstanceLogs() {
   });
 
   return (
-    <div className="flex flex-col gap-4">
-      <header className="flex items-center justify-between">
+    <div className="flex flex-col gap-6">
+      <header className="flex items-center justify-between gap-4">
         <div>
-          <Link to="/instances" className="text-sm text-sky-400 hover:underline">
+          <Link
+            to="/instances"
+            className="text-[11px] font-semibold uppercase tracking-[0.18em] text-lime-300 hover:text-lime-200"
+          >
             ← back to instances
           </Link>
-          <h2 className="mt-1 text-2xl font-semibold">
-            {inst?.name ?? id} logs
-          </h2>
-          <p className="text-xs text-slate-400">
+          <h1 className="mt-2 font-display text-3xl font-bold tracking-tight text-bone-50">
+            {inst?.name ?? id}{" "}
+            <span className="text-bone-400">· logs</span>
+          </h1>
+          <p className="mt-1 text-[11px] uppercase tracking-wider text-bone-500">
             {active
-              ? `Log stream: ${socket.status}`
+              ? `Log stream · ${socket.status}`
               : "Viewing durable log history"}
           </p>
         </div>
         {inst && (
-          <div className="flex items-center gap-3 text-sm text-slate-400">
+          <div className="flex items-center gap-3 text-xs text-bone-400">
             <StatusBadge status={inst.status} />
-            <span>
+            <span className="brand-chip font-mono normal-case tracking-normal">
               {inst.host}:{inst.port}
             </span>
-            {inst.pid && <span>pid {inst.pid}</span>}
+            {inst.pid && <span className="brand-chip">pid {inst.pid}</span>}
           </div>
         )}
       </header>

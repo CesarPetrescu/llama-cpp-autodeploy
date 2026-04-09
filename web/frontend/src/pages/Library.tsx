@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LocalModel, api } from "@/api/client";
 import { Panel } from "@/components/Panel";
+import { PageHeader } from "@/components/PageHeader";
 
 export default function Library() {
   const qc = useQueryClient();
@@ -52,11 +53,8 @@ export default function Library() {
 
   function onRename(m: LocalModel) {
     const key = m.rel ?? m.name;
-    const next = window.prompt(
-      `Rename '${m.rel ?? m.name}' to:`,
-      m.rel ?? m.name,
-    );
-    if (!next || next === (m.rel ?? m.name)) return;
+    const next = window.prompt(`Rename '${key}' to:`, key);
+    if (!next || next === key) return;
     setMsg(null);
     renameMut.mutate({ name: key, newName: next });
   }
@@ -71,14 +69,12 @@ export default function Library() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <header>
-        <h2 className="text-2xl font-semibold">Model library</h2>
-        <p className="text-sm text-slate-400">
-          Browse, rename, and delete local GGUFs. New models can be pulled
-          directly from Hugging Face.
-        </p>
-      </header>
+    <div className="flex flex-col gap-8">
+      <PageHeader
+        eyebrow="Storage"
+        title="Model library"
+        description="Browse, rename, and delete local GGUFs. Pull new models directly from Hugging Face."
+      />
 
       <Panel title="Download from Hugging Face">
         <form onSubmit={submit} className="flex flex-col gap-3 md:flex-row">
@@ -86,74 +82,102 @@ export default function Library() {
             value={spec}
             onChange={(e) => setSpec(e.target.value)}
             placeholder="Qwen/Qwen3-Embedding-8B-GGUF:Q8_0"
-            className="flex-1 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            className="brand-input flex-1"
           />
           <input
             value={token}
             onChange={(e) => setToken(e.target.value)}
             placeholder="hf_token (optional)"
             type="password"
-            className="w-60 rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm"
+            className="brand-input w-60"
           />
           <button
             type="submit"
             disabled={download.isPending}
-            className="rounded bg-sky-500 px-4 py-2 text-sm font-medium text-white hover:bg-sky-400 disabled:opacity-50"
+            className="brand-btn-primary"
           >
             {download.isPending ? "Downloading…" : "Download"}
           </button>
         </form>
-        {msg && <p className="mt-2 text-sm text-slate-300">{msg}</p>}
+        {msg && (
+          <p className="mt-3 text-sm text-lime-200">
+            <span className="mr-2 inline-block h-1 w-1 rounded-full bg-lime-300" />
+            {msg}
+          </p>
+        )}
       </Panel>
 
-      <Panel title={`Local GGUFs (${local.data?.models.length ?? 0})`}>
-        <p className="mb-2 text-xs text-slate-500">{local.data?.models_dir}</p>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-xs uppercase text-slate-500">
-              <th className="py-1">Name</th>
-              <th>Size</th>
-              <th>Params</th>
-              <th>Quant</th>
-              <th className="text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {local.data?.models.map((m) => (
-              <tr key={m.path} className="border-t border-slate-800">
-                <td className="py-2" title={m.path}>
-                  {m.rel ?? m.name}
-                </td>
-                <td>{m.size_h}</td>
-                <td>{m.params_h}</td>
-                <td>{m.quant ?? "—"}</td>
-                <td className="space-x-1 text-right">
-                  <button
-                    className="rounded bg-slate-800 px-2 py-1 text-xs hover:bg-slate-700"
-                    onClick={() => onRename(m)}
-                    disabled={renameMut.isPending}
-                  >
-                    Rename
-                  </button>
-                  <button
-                    className="rounded bg-rose-700 px-2 py-1 text-xs hover:bg-rose-600"
-                    onClick={() => onDelete(m)}
-                    disabled={deleteMut.isPending}
-                  >
-                    Delete
-                  </button>
-                </td>
+      <Panel
+        title={`Local GGUFs · ${local.data?.models.length ?? 0}`}
+        subtitle={local.data?.models_dir}
+      >
+        <div className="overflow-hidden rounded-xl border border-white/5">
+          <table className="w-full text-sm">
+            <thead className="bg-white/[0.03]">
+              <tr className="text-left text-[10px] uppercase tracking-[0.18em] text-bone-500">
+                <th className="px-4 py-2.5 font-semibold">Name</th>
+                <th className="px-4 py-2.5 font-semibold">Size</th>
+                <th className="px-4 py-2.5 font-semibold">Params</th>
+                <th className="px-4 py-2.5 font-semibold">Quant</th>
+                <th className="px-4 py-2.5 text-right font-semibold">
+                  Actions
+                </th>
               </tr>
-            ))}
-            {local.data?.models.length === 0 && (
-              <tr>
-                <td colSpan={5} className="py-4 text-center text-slate-500">
-                  No GGUF files found. Try downloading one above.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {local.data?.models.map((m) => (
+                <tr
+                  key={m.path}
+                  className="border-t border-white/5 hover:bg-white/[0.02]"
+                >
+                  <td
+                    className="px-4 py-3 font-medium text-bone-100"
+                    title={m.path}
+                  >
+                    {m.rel ?? m.name}
+                  </td>
+                  <td className="px-4 py-3 text-bone-300">{m.size_h}</td>
+                  <td className="px-4 py-3 text-bone-300">{m.params_h}</td>
+                  <td className="px-4 py-3">
+                    {m.quant ? (
+                      <span className="brand-chip text-lime-200">
+                        {m.quant}
+                      </span>
+                    ) : (
+                      <span className="text-bone-500">—</span>
+                    )}
+                  </td>
+                  <td className="space-x-2 px-4 py-3 text-right">
+                    <button
+                      className="brand-btn-ghost px-3 py-1.5 text-xs"
+                      onClick={() => onRename(m)}
+                      disabled={renameMut.isPending}
+                    >
+                      Rename
+                    </button>
+                    <button
+                      className="brand-btn-danger px-3 py-1.5 text-xs"
+                      onClick={() => onDelete(m)}
+                      disabled={deleteMut.isPending}
+                    >
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {local.data?.models.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-4 py-10 text-center text-bone-500"
+                  >
+                    No GGUF files found. Try downloading one above.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </Panel>
     </div>
   );

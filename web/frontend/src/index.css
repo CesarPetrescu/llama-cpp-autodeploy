@@ -1,9 +1,14 @@
+@import url("https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
   color-scheme: dark;
+  --brand-lime: #d5ff40;
+  --brand-bone: #c0c2b8;
+  --brand-ink: #0a0b07;
 }
 
 html,
@@ -13,15 +18,91 @@ body,
 }
 
 body {
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
-    sans-serif;
+  font-family: "Poppins", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  background:
+    radial-gradient(1200px 600px at 15% -10%, rgba(213, 255, 64, 0.06), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgba(192, 194, 184, 0.04), transparent 70%),
+    #07080420;
+  background-color: #050602;
+  color: #f4f5f2;
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Minimal log pane styling */
+h1,
+h2,
+h3,
+h4 {
+  font-family: "Poppins", system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+@layer components {
+  .brand-surface {
+    @apply rounded-2xl border border-white/5 bg-ink-300/80 shadow-panel backdrop-blur;
+  }
+  .brand-surface-muted {
+    @apply rounded-xl border border-white/5 bg-ink-200/80;
+  }
+  .brand-chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[11px] font-medium uppercase tracking-wider text-bone-200;
+  }
+  .brand-label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.18em] text-bone-400;
+  }
+  .brand-heading {
+    @apply font-display text-2xl font-bold tracking-tight text-bone-50;
+  }
+  .brand-subtle {
+    @apply text-sm text-bone-300;
+  }
+  .brand-input {
+    @apply w-full rounded-lg border border-white/10 bg-ink-400/60 px-3 py-2 text-sm text-bone-100 placeholder:text-bone-500 focus:border-lime-300 focus:outline-none focus:ring-2 focus:ring-lime-300/40 transition;
+  }
+  .brand-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .brand-btn-primary {
+    @apply brand-btn bg-lime-300 text-ink-900 hover:bg-lime-200 shadow-glow-lime;
+  }
+  .brand-btn-ghost {
+    @apply brand-btn border border-white/10 bg-white/5 text-bone-100 hover:border-lime-300/60 hover:text-lime-200;
+  }
+  .brand-btn-danger {
+    @apply brand-btn border border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20;
+  }
+  .brand-btn-warning {
+    @apply brand-btn border border-amber-400/40 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20;
+  }
+}
+
+/* Log pane keeps mono font regardless of body stack */
 .log-pane {
-  font-family: "JetBrains Mono", "Fira Code", SFMono-Regular, Menlo, monospace;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Slim scrollbars that match the palette */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(192, 194, 184, 0.14);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(213, 255, 64, 0.35);
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
