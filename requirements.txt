@@ -14,3 +14,9 @@ sentencepiece
 hf-transfer
 accelerate
 bitsandbytes
+
+# Web backend
+fastapi
+uvicorn[standard]
+pydantic>=2
+websockets

@@ -135,6 +135,80 @@ python rpc_server_cli.py --host 0.0.0.0 --port 5515 --devices 0
 
 `rpc_server_cli.py` requires `./bin/rpc-server` to exist (build with `--distributed` / distributed backend enabled).
 
+## Web UI (browser backend + frontend)
+
+A FastAPI backend and React + Vite + TypeScript frontend under [web/](web/)
+let you manage `llama-server` instances, stream logs over WebSocket, preview
+memory plans, browse the model library, and trigger `autodevops.py` builds
+from a browser. It reuses the same Python helpers as the TUIs
+([loadmodel.py](loadmodel.py), [memory_utils.py](memory_utils.py),
+[autodevops.py](autodevops.py)) so behaviour is consistent across both
+surfaces.
+
+### Backend
+
+```bash
+source venv/bin/activate
+pip install -r requirements.txt          # adds fastapi, uvicorn, pydantic, websockets
+python web_cli.py --init                 # writes .web_config.json with a fresh bearer token
+python web_cli.py                        # serves on http://0.0.0.0:8787 by default
+```
+
+The backend binds to `0.0.0.0` by default and requires a bearer token on every
+request (`/api/health` is the only public endpoint). Change
+`host`/`port`/`models_dir` in [.web_config.json](.web_config.json). Managed
+instances and build history persist in `.web_state.json`; per-instance logs
+tee to `web/logs/<id>.log` so earlier output survives a backend restart.
+
+Endpoints (see `GET /docs` for the full OpenAPI schema):
+
+- `GET  /api/health` — public health check
+- `GET  /api/memory/gpus`, `POST /api/memory/plan`, `POST /api/memory/auto-split`
+- `GET  /api/models/local`, `GET /api/models/binary-caps`, `POST /api/models/download`
+- `GET /POST /api/instances`, `GET/POST /api/instances/{id}[/start|/stop|/restart]`, `DELETE /api/instances/{id}`
+- `WS   /api/instances/{id}/logs?token=…` — live stdout tail
+- `GET /POST /api/builds`, `GET /api/builds/{id}`, `POST /api/builds/{id}/stop`
+- `WS   /api/builds/{id}/logs?token=…`
+
+### Frontend
+
+```bash
+cd web/frontend
+npm install
+npm run dev        # http://localhost:5173, proxies /api -> http://127.0.0.1:8787
+# or for production:
+npm run build      # writes web/frontend/dist/
+```
+
+When `web/frontend/dist/` exists, `python web_cli.py` automatically mounts it
+at `/` so the full app is served at `http://<host>:8787`. In the UI, open
+**Settings** and paste the token printed by `python web_cli.py --init` (or
+read it from `.web_config.json`). Pages:
+
+- **Dashboard** — backend health, GPU stats, running-instance summary
+- **Instances** — create/start/stop/restart/delete `llama-server` processes
+  with a form mirroring `loadmodel_cli.py` (mode, model ref, n-gpu-layers,
+  tensor-split, ctx-size, cpu-moe, jinja, extra flags, …)
+- **Instance logs** — live WebSocket tail with pause/resume
+- **Memory** — live `detect_gpus()` probe + `estimate_memory_profile()`
+  per-GPU weight/KV preview
+- **Library** — scan `./models` for GGUFs and download new ones from
+  Hugging Face via `resolve_gguf()`
+- **Builds** — trigger `autodevops.py` and stream the build log
+- **Settings** — backend URL + bearer token
+
+### Security notes
+
+- The bearer token is the only auth layer; keep `.web_config.json` readable
+  only by you and prefer binding to `127.0.0.1` when you don't need remote
+  access.
+- WebSocket endpoints accept the token as a `?token=` query parameter because
+  browsers can't set `Authorization` headers on WS upgrade. If you expose the
+  backend beyond a trusted LAN, put it behind an HTTPS reverse proxy.
+- Managed `llama-server` processes inherit the backend's environment, so
+  `HF_TOKEN`, `CUDA_VISIBLE_DEVICES`, `OMP_NUM_THREADS` and friends work the
+  same as running `loadmodel.py` directly.
+
 ## Convenience launcher
 
 `./start` uses `./venv/bin/python` and offers a small menu:
@@ -143,6 +217,7 @@ python rpc_server_cli.py --host 0.0.0.0 --port 5515 --devices 0
 ./start
 ./start autodevops
 ./start loadmodel
+./start web [--init]
 ./start --help
 ```
 

@@ -17,6 +17,14 @@ llama-cpp-latest
 # Local CLI state
 .autodevops_cli.json
 .loadmodel_cli.json
+.loadmodel_dist_cli.json
+
+# Web backend state
+.web_config.json
+.web_state.json
+web/logs/
+web/frontend/node_modules/
+web/frontend/dist/
 
 # Python cache
 __pycache__/
