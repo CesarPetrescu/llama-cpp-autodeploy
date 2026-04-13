@@ -159,6 +159,10 @@ request (`/api/health` is the only public endpoint). Change
 `host`/`port`/`models_dir` in [.web_config.json](.web_config.json). Managed
 instances and build history persist in `.web_state.json`; per-instance logs
 tee to `web/logs/<id>.log` so earlier output survives a backend restart.
+On backend startup, the manager also scans for orphaned `llama-server`
+processes launched from this repo and re-adopts them so stop/restart control
+can be recovered after a backend crash. You can force the same scan manually
+with `POST /api/instances/recover`.
 
 Endpoints (see `GET /docs` for the full OpenAPI schema):
 
@@ -166,6 +170,7 @@ Endpoints (see `GET /docs` for the full OpenAPI schema):
 - `GET  /api/memory/gpus`, `POST /api/memory/plan`, `POST /api/memory/auto-split`
 - `GET  /api/models/local`, `GET /api/models/binary-caps`, `POST /api/models/download`
 - `GET /POST /api/instances`, `GET/POST /api/instances/{id}[/start|/stop|/restart]`, `DELETE /api/instances/{id}`
+- `POST /api/instances/recover` — rescan `/proc` and adopt orphaned managed `llama-server` processes
 - `WS   /api/instances/{id}/logs?token=…` — live stdout tail
 - `GET /POST /api/builds`, `GET /api/builds/{id}`, `POST /api/builds/{id}/stop`
 - `WS   /api/builds/{id}/logs?token=…`

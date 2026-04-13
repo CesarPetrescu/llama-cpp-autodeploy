@@ -63,6 +63,21 @@ async def create_instance(payload: CreateInstanceRequest, request: Request) -> D
     return {"instance": data}
 
 
+@router.post("/recover")
+async def recover_instances(request: Request) -> Dict[str, Any]:
+    manager = request.app.state.manager
+    recovered = await manager.recover_instances()
+    recovered_payload = []
+    for inst in recovered:
+        data = manager.serialize_instance(inst.record.id)
+        if data is not None:
+            recovered_payload.append(data)
+    return {
+        "recovered": recovered_payload,
+        "instances": manager.list_instances(),
+    }
+
+
 @router.get("/{instance_id}")
 async def get_instance(instance_id: str, request: Request, tail: int = 500) -> Dict[str, Any]:
     manager = request.app.state.manager
