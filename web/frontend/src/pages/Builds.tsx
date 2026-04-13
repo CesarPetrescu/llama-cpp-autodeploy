@@ -44,6 +44,9 @@ export default function Builds() {
   const hasFastMath = boolFlags.has("--fast-math");
   const hasDistributed = boolFlags.has("--distributed");
   const hasCpuOnly = boolFlags.has("--cpu-only");
+  const buildList = builds.data?.builds ?? [];
+  const runningCount = buildList.filter((build) => build.status === "running").length;
+  const failedCount = buildList.filter((build) => build.status === "failure").length;
 
   useEffect(() => {
     if (forceMmqChoices && !forceMmqChoices.includes(forceMmq)) {
@@ -120,7 +123,7 @@ export default function Builds() {
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6">
       <PageHeader
         eyebrow="Toolchain"
         title="llama.cpp builds"
@@ -133,6 +136,22 @@ export default function Builds() {
           </>
         }
       />
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <BuildStat label="Queued history" value={`${buildList.length}`} hint="Persisted build records" />
+        <BuildStat
+          label="Running now"
+          value={`${runningCount}`}
+          hint="Live build processes"
+          tone={runningCount > 0 ? "warning" : "default"}
+        />
+        <BuildStat
+          label="Failures"
+          value={`${failedCount}`}
+          hint="Latest attention points"
+          tone={failedCount > 0 ? "danger" : "default"}
+        />
+      </div>
 
       <Panel title="New build">
         {flags.isLoading && (
@@ -237,21 +256,28 @@ export default function Builds() {
       <div className="grid gap-5 lg:grid-cols-3">
         <Panel title="History" className="lg:col-span-1">
           <ul className="flex flex-col gap-2">
-            {builds.data?.builds.map((b) => (
-              <li
-                key={b.id}
-                className={`flex cursor-pointer items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition ${
-                  selected === b.id
-                    ? "border-lime-300/40 bg-lime-300/5 text-lime-200"
-                    : "border-white/5 bg-white/[0.02] text-bone-200 hover:border-white/10"
-                }`}
-                onClick={() => setSelected(b.id)}
-              >
-                <span className="truncate font-mono text-[12px]">{b.id}</span>
-                <StatusBadge status={b.status} />
+            {buildList.map((b) => (
+              <li key={b.id}>
+                <button
+                  type="button"
+                  className={`flex w-full items-center justify-between gap-2 rounded-2xl border px-3 py-3 text-left text-sm ${
+                    selected === b.id
+                      ? "border-lime-300/40 bg-lime-300/5 text-lime-200"
+                      : "border-white/10 bg-white/[0.03] text-bone-200 hover:border-white/20"
+                  }`}
+                  onClick={() => setSelected(b.id)}
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-[12px]">{b.id}</div>
+                    <div className="mt-1 text-xs text-bone-400">
+                      ref {String(b.config.ref ?? "latest")}
+                    </div>
+                  </div>
+                  <StatusBadge status={b.status} />
+                </button>
               </li>
             ))}
-            {builds.data?.builds.length === 0 && (
+            {buildList.length === 0 && (
               <li className="py-6 text-center text-sm text-bone-500">
                 No builds yet.
               </li>
@@ -285,7 +311,7 @@ export default function Builds() {
         >
           {selected ? (
             <>
-              <div className="mb-2 text-[11px] uppercase tracking-wider text-bone-500">
+              <div className="mb-3 rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[11px] uppercase tracking-wider text-bone-400">
                 {isActiveBuild(selectedBuild?.status)
                   ? `Log stream · ${socket.status}`
                   : "Viewing durable log history"}
@@ -299,6 +325,34 @@ export default function Builds() {
           )}
         </Panel>
       </div>
+    </div>
+  );
+}
+
+function BuildStat({
+  label,
+  value,
+  hint,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  tone?: "default" | "warning" | "danger";
+}) {
+  const valueClass =
+    tone === "warning"
+      ? "text-amber-200"
+      : tone === "danger"
+        ? "text-rose-200"
+        : "text-bone-50";
+  return (
+    <div className="brand-stat">
+      <div className="brand-label">{label}</div>
+      <div className={`mt-3 text-4xl font-bold tracking-tight ${valueClass}`}>
+        {value}
+      </div>
+      <div className="mt-4 text-sm text-bone-300">{hint}</div>
     </div>
   );
 }

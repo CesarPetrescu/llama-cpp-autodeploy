@@ -111,8 +111,8 @@ export default function Library() {
         title={`Local GGUFs · ${local.data?.models.length ?? 0}`}
         subtitle={local.data?.models_dir}
       >
-        <div className="overflow-hidden rounded-xl border border-white/5">
-          <table className="w-full text-sm">
+        <div className="brand-table-wrap">
+          <table className="min-w-[720px] w-full text-sm">
             <thead className="bg-white/[0.03]">
               <tr className="text-left text-[10px] uppercase tracking-[0.18em] text-bone-500">
                 <th className="px-4 py-2.5 font-semibold">Name</th>
@@ -128,10 +128,10 @@ export default function Library() {
               {local.data?.models.map((m) => (
                 <tr
                   key={m.path}
-                  className="border-t border-white/5 hover:bg-white/[0.02]"
+                  className="border-t border-white/10 hover:bg-white/[0.03]"
                 >
                   <td
-                    className="px-4 py-3 font-medium text-bone-100"
+                    className="px-4 py-3 font-medium text-bone-50"
                     title={m.path}
                   >
                     {m.rel ?? m.name}

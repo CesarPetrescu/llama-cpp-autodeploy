@@ -258,6 +258,7 @@ export default function Instances() {
   const [config, setConfig] = useState<InstanceConfig>({ ...DEFAULT_CONFIG });
   const [autoStart, setAutoStart] = useState(true);
   const [formError, setFormError] = useState<string | null>(null);
+  const [instanceMessage, setInstanceMessage] = useState<string | null>(null);
 
   const query = useQuery({
     queryKey: ["instances"],
@@ -277,6 +278,10 @@ export default function Instances() {
   const splitEditorValues = normalizeSplitValues(parseTensorSplit(config.tensor_split), selectedGpus.length);
   const autoPreview = buildPolicySplit(selectedGpus, (config.auto_split_policy as AutoSplitPolicy | null) ?? "vram");
   const splitTotal = splitEditorValues.reduce((sum, value) => sum + value, 0);
+  const instances = query.data?.instances ?? [];
+  const runningCount = instances.filter((inst) => inst.status === "running").length;
+  const stoppedCount = instances.filter((inst) => inst.status === "stopped").length;
+  const crashedCount = instances.filter((inst) => inst.status === "crashed").length;
 
   const createMut = useMutation({
     mutationFn: async () => api.createInstance(name, config, autoStart),
@@ -285,14 +290,29 @@ export default function Instances() {
       setName("");
       setConfig({ ...DEFAULT_CONFIG });
       setFormError(null);
+      setInstanceMessage(autoStart ? "Instance created and launch requested." : "Instance saved to the control plane.");
       qc.invalidateQueries({ queryKey: ["instances"] });
     },
     onError: (err: Error) => setFormError(err.message),
   });
 
+  const recoverMut = useMutation({
+    mutationFn: () => api.recoverInstances(),
+    onSuccess: (data) => {
+      setInstanceMessage(
+        data.recovered.length > 0
+          ? `Recovered ${data.recovered.length} orphaned llama-server instance${data.recovered.length === 1 ? "" : "s"}.`
+          : "No orphaned llama-server processes were found.",
+      );
+      qc.invalidateQueries({ queryKey: ["instances"] });
+    },
+    onError: (err: Error) => setInstanceMessage(err.message),
+  });
+
   const action = (fn: (id: string) => Promise<unknown>) => async (id: string) => {
     try {
       await fn(id);
+      setInstanceMessage(null);
       qc.invalidateQueries({ queryKey: ["instances"] });
     } catch (err) {
       alert((err as Error).message);
@@ -371,261 +391,343 @@ export default function Instances() {
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-6">
       <PageHeader
         eyebrow="Workloads"
         title="Instances"
-        description="Launch, stop, and monitor llama-server processes."
+        description="Launch, recover, and monitor llama-server processes from one place. The page now exposes backend recovery directly so orphaned servers do not disappear after a crash."
         actions={
-          <button
-            className="brand-btn-primary"
-            onClick={() => setShowForm((s) => !s)}
-          >
-            {showForm ? "Cancel" : "+ New instance"}
-          </button>
+          <>
+            <button
+              type="button"
+              className="brand-btn-ghost"
+              disabled={recoverMut.isPending}
+              onClick={() => recoverMut.mutate()}
+            >
+              {recoverMut.isPending ? "Scanning…" : "Recover running servers"}
+            </button>
+            <button
+              type="button"
+              className="brand-btn-primary"
+              onClick={() => setShowForm((s) => !s)}
+            >
+              {showForm ? "Close editor" : "New instance"}
+            </button>
+          </>
         }
       />
 
-      {showForm && (
-        <Panel title="New instance">
-          <form onSubmit={submit} className="grid gap-3 md:grid-cols-2">
-            <Field label="Name">
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="input"
-                placeholder="qwen-30b"
-              />
-            </Field>
-            <Field label="Mode">
-              <select
-                value={config.mode}
-                onChange={(e) => upd("mode", e.target.value as "llm" | "embed")}
-                className="input"
-              >
-                <option value="llm">llm</option>
-                <option value="embed">embed</option>
-              </select>
-            </Field>
-            <div className="md:col-span-2 flex flex-col gap-1 text-sm">
-              <span className="brand-label">Model (pick from library or paste HF ref)</span>
-              <ModelSelect
-                value={config.model_ref}
-                onChange={(value) => upd("model_ref", value)}
-              />
-            </div>
-            <Field label="HF token (optional)">
-              <input
-                type="password"
-                value={config.hf_token ?? ""}
-                onChange={(e) => upd("hf_token", e.target.value)}
-                className="input"
-              />
-            </Field>
-            <Field label="Host">
-              <input value={config.host} onChange={(e) => upd("host", e.target.value)} className="input" />
-            </Field>
-            <Field label="Port">
-              <input
-                type="number"
-                value={config.port}
-                onChange={(e) => upd("port", Number.parseInt(e.target.value, 10) || 0)}
-                className="input"
-              />
-            </Field>
-            <Field label="--n-gpu-layers">
-              <input
-                type="number"
-                value={config.n_gpu_layers ?? 0}
-                onChange={(e) => upd("n_gpu_layers", Number.parseInt(e.target.value, 10))}
-                className="input"
-              />
-            </Field>
-            <Field label="--split-mode">
-              <select
-                value={config.split_mode ?? "default"}
-                onChange={(e) => upd("split_mode", e.target.value)}
-                className="input"
-              >
-                {SPLIT_MODE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </Field>
+      {instanceMessage && (
+        <div className="rounded-2xl border border-lime-300/25 bg-lime-300/10 px-4 py-3 text-sm text-lime-100">
+          {instanceMessage}
+        </div>
+      )}
 
-            <div className="md:col-span-2 brand-surface-muted p-4">
-              <div className="flex flex-col gap-3">
-                <div>
-                  <div className="font-display text-sm font-semibold text-bone-50">GPU placement</div>
-                  <div className="text-[11px] uppercase tracking-wider text-bone-500">
-                    Visible GPUs become <code className="text-lime-300">CUDA_VISIBLE_DEVICES</code> for this instance.
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <SummaryCard label="Managed" value={`${instances.length}`} hint="Persisted control-plane records" />
+        <SummaryCard
+          label="Running"
+          value={`${runningCount}`}
+          hint="Currently answering requests"
+          tone="success"
+        />
+        <SummaryCard label="Stopped" value={`${stoppedCount}`} hint="Ready to restart" />
+        <SummaryCard
+          label="Crashed"
+          value={`${crashedCount}`}
+          hint="Needs inspection or relaunch"
+          tone={crashedCount > 0 ? "danger" : "default"}
+        />
+      </div>
+
+      {showForm && (
+        <Panel
+          title="Instance editor"
+          subtitle="Group the launch settings before you start a new workload. This layout is denser and easier to scan than the previous flat form."
+        >
+          <form onSubmit={submit} className="space-y-4">
+            <div className="grid gap-4 xl:grid-cols-[1.08fr_0.92fr]">
+              <div className="space-y-4">
+                <div className="brand-surface-muted p-4">
+                  <div className="brand-label">Identity</div>
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    <Field label="Name">
+                      <input
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className="brand-input"
+                        placeholder="qwen-30b"
+                      />
+                    </Field>
+                    <Field label="Mode">
+                      <select
+                        value={config.mode}
+                        onChange={(e) => upd("mode", e.target.value as "llm" | "embed")}
+                        className="brand-input"
+                      >
+                        <option value="llm">llm</option>
+                        <option value="embed">embed</option>
+                      </select>
+                    </Field>
+                    <div className="md:col-span-2 flex flex-col gap-1 text-sm">
+                      <span className="brand-label">Model</span>
+                      <ModelSelect
+                        value={config.model_ref}
+                        onChange={(value) => upd("model_ref", value)}
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <Field label="HF token (optional)">
+                        <input
+                          type="password"
+                          value={config.hf_token ?? ""}
+                          onChange={(e) => upd("hf_token", e.target.value)}
+                          className="brand-input"
+                          placeholder="Used only for gated/private model pulls"
+                        />
+                      </Field>
+                    </div>
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${selectedGpuIndices.length === gpus.length && gpus.length > 0 ? "bg-lime-300 text-ink-900 shadow-glow-lime" : "border border-white/10 bg-white/5 text-bone-200 hover:border-lime-300/40"}`}
-                    onClick={() => setGpuSelection(gpus.map((gpu) => gpu.index))}
-                    disabled={gpus.length === 0}
-                  >
-                    All GPUs
-                  </button>
-                  <button
-                    type="button"
-                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${selectedGpuIndices.length === 0 ? "bg-amber-400 text-ink-900" : "border border-white/10 bg-white/5 text-bone-200 hover:border-amber-300/40"}`}
-                    onClick={() => setStrategy("cpu")}
-                  >
-                    CPU only
-                  </button>
+
+                <div className="brand-surface-muted p-4">
+                  <div className="brand-label">Endpoint and runtime</div>
+                  <div className="mt-4 grid gap-4 md:grid-cols-2">
+                    <Field label="Host">
+                      <input
+                        value={config.host}
+                        onChange={(e) => upd("host", e.target.value)}
+                        className="brand-input"
+                      />
+                    </Field>
+                    <Field label="Port">
+                      <input
+                        type="number"
+                        value={config.port}
+                        onChange={(e) => upd("port", Number.parseInt(e.target.value, 10) || 0)}
+                        className="brand-input"
+                      />
+                    </Field>
+                    <Field label="--n-gpu-layers">
+                      <input
+                        type="number"
+                        value={config.n_gpu_layers ?? 0}
+                        onChange={(e) => upd("n_gpu_layers", Number.parseInt(e.target.value, 10))}
+                        className="brand-input"
+                      />
+                    </Field>
+                    <Field label="--ctx-size">
+                      <input
+                        type="number"
+                        value={config.ctx_size ?? 0}
+                        onChange={(e) => upd("ctx_size", Number.parseInt(e.target.value, 10))}
+                        className="brand-input"
+                      />
+                    </Field>
+                    <Field label="--split-mode">
+                      <select
+                        value={config.split_mode ?? "default"}
+                        onChange={(e) => upd("split_mode", e.target.value)}
+                        className="brand-input"
+                      >
+                        {SPLIT_MODE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="--n-cpu-moe">
+                      <input
+                        type="number"
+                        value={config.n_cpu_moe ?? 0}
+                        onChange={(e) => upd("n_cpu_moe", Number.parseInt(e.target.value, 10))}
+                        className="brand-input"
+                      />
+                    </Field>
+                    <div className="md:col-span-2">
+                      <Field label="Extra flags">
+                        <input
+                          value={config.extra_flags}
+                          onChange={(e) => upd("extra_flags", e.target.value)}
+                          className="brand-input"
+                          placeholder="--parallel 4 --flash-attn on"
+                        />
+                      </Field>
+                    </div>
+                  </div>
                 </div>
-                <div className="grid gap-2 md:grid-cols-3">
-                  {gpus.map((gpu) => {
-                    const active = selectedGpuIndices.includes(gpu.index);
-                    return (
+              </div>
+
+              <div className="space-y-4">
+                <div className="brand-surface-muted p-4">
+                  <div className="brand-label">GPU placement</div>
+                  <p className="mt-2 text-sm text-bone-300">
+                    Selected devices become <code className="text-lime-300">CUDA_VISIBLE_DEVICES</code> for this instance.
+                  </p>
+
+                  <div className="mt-4 grid gap-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <Field label="GPU memory strategy">
+                        <select
+                          value={(config.gpu_strategy as string) || "balanced"}
+                          onChange={(e) => setStrategy(e.target.value as GpuStrategy)}
+                          className="brand-input"
+                        >
+                          {GPU_STRATEGY_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      <Field label="Auto split policy">
+                        <select
+                          value={(config.auto_split_policy as string) || "vram"}
+                          onChange={(e) => upd("auto_split_policy", e.target.value)}
+                          className="brand-input"
+                        >
+                          {AUTO_SPLIT_POLICY_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        key={gpu.index}
-                        onClick={() => toggleGpu(gpu.index)}
-                        className={`rounded-xl border p-3 text-left transition ${active ? "border-lime-300/60 bg-lime-300/10 shadow-[0_0_0_1px_rgba(213,255,64,0.2)]" : "border-white/5 bg-ink-300/60 hover:border-white/20"}`}
+                        className={`rounded-xl px-3 py-2 text-xs font-semibold ${selectedGpuIndices.length === gpus.length && gpus.length > 0 ? "bg-lime-300 text-ink-900 shadow-glow-lime" : "border border-white/10 bg-white/[0.04] text-bone-200 hover:border-lime-300/40"}`}
+                        onClick={() => setGpuSelection(gpus.map((gpu) => gpu.index))}
+                        disabled={gpus.length === 0}
                       >
-                        <div className="font-medium text-bone-50">#{gpu.index} {gpu.name}</div>
-                        <div className="mt-1 text-[11px] uppercase tracking-wider text-bone-500">
-                          {gpu.free_h} free · {gpu.total_h} total
-                        </div>
+                        All GPUs
                       </button>
-                    );
-                  })}
-                  {gpus.length === 0 && (
-                    <div className="rounded-xl border border-white/5 bg-ink-300/60 p-3 text-sm text-bone-400">
-                      No CUDA devices detected. The instance can still run CPU-only.
+                      <button
+                        type="button"
+                        className={`rounded-xl px-3 py-2 text-xs font-semibold ${selectedGpuIndices.length === 0 ? "bg-amber-400 text-ink-900" : "border border-white/10 bg-white/[0.04] text-bone-200 hover:border-amber-300/40"}`}
+                        onClick={() => setStrategy("cpu")}
+                      >
+                        CPU only
+                      </button>
                     </div>
-                  )}
-                </div>
-                <div className="text-[11px] uppercase tracking-wider text-bone-500">
-                  Visibility · <span className="text-lime-300">{formatGpuVisibility(config, gpus)}</span>
-                </div>
-              </div>
-            </div>
 
-            <Field label="GPU memory strategy">
-              <select
-                value={(config.gpu_strategy as string) || "balanced"}
-                onChange={(e) => setStrategy(e.target.value as GpuStrategy)}
-                className="input"
-              >
-                {GPU_STRATEGY_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Auto split policy">
-              <select
-                value={(config.auto_split_policy as string) || "vram"}
-                onChange={(e) => upd("auto_split_policy", e.target.value)}
-                className="input"
-              >
-                {AUTO_SPLIT_POLICY_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="--tensor-split (blank, auto, or 60,40)">
-              <input
-                value={config.tensor_split ?? ""}
-                onChange={(e) => updateTensorSplit(e.target.value)}
-                className="input"
-                placeholder={selectedGpus.length > 1 ? "60,40" : ""}
-              />
-            </Field>
-            <Field label="--ctx-size">
-              <input
-                type="number"
-                value={config.ctx_size ?? 0}
-                onChange={(e) => upd("ctx_size", Number.parseInt(e.target.value, 10))}
-                className="input"
-              />
-            </Field>
-            <Field label="--n-cpu-moe">
-              <input
-                type="number"
-                value={config.n_cpu_moe ?? 0}
-                onChange={(e) => upd("n_cpu_moe", Number.parseInt(e.target.value, 10))}
-                className="input"
-              />
-            </Field>
-            <Field label="Extra flags">
-              <input
-                value={config.extra_flags}
-                onChange={(e) => upd("extra_flags", e.target.value)}
-                className="input"
-                placeholder="--parallel 4"
-              />
-            </Field>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      {gpus.map((gpu) => {
+                        const active = selectedGpuIndices.includes(gpu.index);
+                        return (
+                          <button
+                            type="button"
+                            key={gpu.index}
+                            onClick={() => toggleGpu(gpu.index)}
+                            className={`rounded-2xl border p-3 text-left ${active ? "border-lime-300/60 bg-lime-300/10 shadow-[0_0_0_1px_rgba(213,255,64,0.2)]" : "border-white/10 bg-ink-300/60 hover:border-white/20"}`}
+                          >
+                            <div className="font-medium text-bone-50">
+                              #{gpu.index} {gpu.name}
+                            </div>
+                            <div className="mt-1 text-[11px] uppercase tracking-wider text-bone-500">
+                              {gpu.free_h} free · {gpu.total_h} total
+                            </div>
+                          </button>
+                        );
+                      })}
+                      {gpus.length === 0 && (
+                        <div className="rounded-2xl border border-white/10 bg-ink-300/60 p-3 text-sm text-bone-400">
+                          No CUDA devices detected. CPU-only launch is still available.
+                        </div>
+                      )}
+                    </div>
 
-            {selectedGpus.length > 1 && (
-              <div className="md:col-span-2 brand-surface-muted p-4">
-                <div className="font-display text-sm font-semibold text-bone-50">Per-GPU split</div>
-                <div className="mt-1 text-[11px] uppercase tracking-wider text-bone-500">
-                  {tensorSplitAuto
-                    ? "Preview of the auto policy that will be resolved on launch."
-                    : "Edit percentages directly for each selected GPU."}
+                    <Field label="--tensor-split (blank, auto, or 60,40)">
+                      <input
+                        value={config.tensor_split ?? ""}
+                        onChange={(e) => updateTensorSplit(e.target.value)}
+                        className="brand-input"
+                        placeholder={selectedGpus.length > 1 ? "60,40" : "auto"}
+                      />
+                    </Field>
+
+                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-3 text-xs text-bone-300">
+                      Visibility: <span className="text-lime-300">{formatGpuVisibility(config, gpus)}</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="mt-3 grid gap-3 md:grid-cols-3">
-                  {(tensorSplitAuto ? autoPreview : splitEditorValues).map((value, idx) => (
-                    <label key={selectedGpus[idx].index} className="flex flex-col gap-1 text-sm">
-                      <span className="brand-label">
-                        GPU #{selectedGpus[idx].index} {selectedGpus[idx].name}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="number"
-                          min={0}
-                          step="0.1"
-                          value={value}
-                          disabled={tensorSplitAuto}
-                          onChange={(e) => setSplitValue(idx, e.target.value)}
-                          className="input"
-                        />
-                        <span className="text-xs text-bone-400">%</span>
+
+                {selectedGpus.length > 1 && (
+                  <div className="brand-surface-muted p-4">
+                    <div className="brand-label">Per-GPU split</div>
+                    <p className="mt-2 text-sm text-bone-300">
+                      {tensorSplitAuto
+                        ? "Preview of the selected auto policy resolved against the current GPU set."
+                        : "Edit percentages directly when you want explicit placement."}
+                    </p>
+                    <div className="mt-4 grid gap-3">
+                      {(tensorSplitAuto ? autoPreview : splitEditorValues).map((value, idx) => (
+                        <label key={selectedGpus[idx].index} className="flex flex-col gap-1 text-sm">
+                          <span className="brand-label">
+                            GPU #{selectedGpus[idx].index} {selectedGpus[idx].name}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min={0}
+                              step="0.1"
+                              value={value}
+                              disabled={tensorSplitAuto}
+                              onChange={(e) => setSplitValue(idx, e.target.value)}
+                              className="brand-input"
+                            />
+                            <span className="text-xs text-bone-400">%</span>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                    {!tensorSplitAuto && (
+                      <div className={`mt-3 text-[11px] uppercase tracking-wider ${Math.abs(splitTotal - 100) < 0.001 ? "text-lime-300" : "text-amber-300"}`}>
+                        Current total · {splitTotal}%
                       </div>
-                    </label>
-                  ))}
-                </div>
-                {!tensorSplitAuto && (
-                  <div className={`mt-3 text-[11px] uppercase tracking-wider ${Math.abs(splitTotal - 100) < 0.001 ? "text-lime-300" : "text-amber-300"}`}>
-                    Current total · {splitTotal}%
+                    )}
                   </div>
                 )}
-              </div>
-            )}
 
-            <div className="flex items-center gap-4">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={config.cpu_moe}
-                  onChange={(e) => upd("cpu_moe", e.target.checked)}
-                />
-                --cpu-moe
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={config.jinja}
-                  onChange={(e) => upd("jinja", e.target.checked)}
-                />
-                --jinja
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={autoStart}
-                  onChange={(e) => setAutoStart(e.target.checked)}
-                />
-                start now
-              </label>
+                <div className="brand-surface-muted p-4">
+                  <div className="brand-label">Launch toggles</div>
+                  <div className="mt-4 grid gap-3 text-sm text-bone-200">
+                    <label className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={config.cpu_moe}
+                        onChange={(e) => upd("cpu_moe", e.target.checked)}
+                        className="h-4 w-4 rounded border-white/20 bg-ink-400 text-lime-300 accent-lime-300"
+                      />
+                      Offload all MoE experts to CPU
+                    </label>
+                    <label className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={config.jinja}
+                        onChange={(e) => upd("jinja", e.target.checked)}
+                        className="h-4 w-4 rounded border-white/20 bg-ink-400 text-lime-300 accent-lime-300"
+                      />
+                      Enable Jinja chat template support
+                    </label>
+                    <label className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={autoStart}
+                        onChange={(e) => setAutoStart(e.target.checked)}
+                        className="h-4 w-4 rounded border-white/20 bg-ink-400 text-lime-300 accent-lime-300"
+                      />
+                      Start immediately after save
+                    </label>
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="col-span-full flex items-center gap-3">
+
+            <div className="flex flex-wrap items-center gap-3 border-t border-white/10 pt-4">
               <button
                 type="submit"
                 disabled={createMut.isPending}
@@ -633,15 +735,21 @@ export default function Instances() {
               >
                 {createMut.isPending ? "Creating…" : "Create instance"}
               </button>
+              <span className="text-sm text-bone-400">
+                {autoStart ? "The backend will try to launch it right away." : "The instance record will be saved in stopped state."}
+              </span>
               {formError && <span className="text-sm text-rose-300">{formError}</span>}
             </div>
           </form>
         </Panel>
       )}
 
-      <Panel title="Managed instances">
-        <div className="overflow-hidden rounded-xl border border-white/5">
-          <table className="w-full text-sm">
+      <Panel
+        title="Managed instances"
+        subtitle="Scrollable on smaller screens, with the high-friction actions grouped at the far right."
+      >
+        <div className="brand-table-wrap">
+          <table className="min-w-[980px] w-full text-sm">
             <thead className="bg-white/[0.03]">
               <tr className="text-left text-[10px] uppercase tracking-[0.18em] text-bone-500">
                 <th className="px-4 py-2.5 font-semibold">Name</th>
@@ -656,9 +764,9 @@ export default function Instances() {
               {query.data?.instances.map((inst: Instance) => (
                 <tr
                   key={inst.id}
-                  className="border-t border-white/5 hover:bg-white/[0.02]"
+                  className="border-t border-white/10 hover:bg-white/[0.03]"
                 >
-                  <td className="px-4 py-3 font-medium text-bone-100">
+                  <td className="px-4 py-3 font-medium text-bone-50">
                     {inst.name}
                   </td>
                   <td className="px-4 py-3">
@@ -676,7 +784,8 @@ export default function Instances() {
                   <td className="px-4 py-3 text-bone-300">
                     {formatUptime(inst.uptime_s)}
                   </td>
-                  <td className="space-x-2 px-4 py-3 text-right">
+                  <td className="px-4 py-3">
+                    <div className="flex justify-end gap-2">
                     <Link
                       to={`/instances/${inst.id}/logs`}
                       className="brand-btn-ghost px-3 py-1.5 text-xs"
@@ -719,6 +828,7 @@ export default function Instances() {
                     >
                       Delete
                     </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -736,26 +846,6 @@ export default function Instances() {
           </table>
         </div>
       </Panel>
-
-      <style>{`
-        .input {
-          width: 100%;
-          border: 1px solid rgba(255, 255, 255, 0.10);
-          background: rgba(13, 14, 9, 0.6);
-          color: rgb(244 245 242);
-          padding: 0.5rem 0.75rem;
-          border-radius: 0.5rem;
-          font-size: 0.875rem;
-          font-family: Poppins, system-ui, sans-serif;
-          transition: border-color 120ms, box-shadow 120ms;
-        }
-        .input::placeholder { color: rgb(131 135 123); }
-        .input:focus {
-          outline: none;
-          border-color: rgba(213, 255, 64, 0.55);
-          box-shadow: 0 0 0 3px rgba(213, 255, 64, 0.18);
-        }
-      `}</style>
     </div>
   );
 }
@@ -766,5 +856,33 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       <span className="brand-label">{label}</span>
       {children}
     </label>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  hint,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  tone?: "default" | "success" | "danger";
+}) {
+  const toneClass =
+    tone === "success"
+      ? "text-lime-200"
+      : tone === "danger"
+        ? "text-rose-200"
+        : "text-bone-50";
+  return (
+    <div className="brand-stat">
+      <div className="brand-label">{label}</div>
+      <div className={`mt-3 text-4xl font-bold tracking-tight ${toneClass}`}>
+        {value}
+      </div>
+      <div className="mt-4 text-sm text-bone-300">{hint}</div>
+    </div>
   );
 }

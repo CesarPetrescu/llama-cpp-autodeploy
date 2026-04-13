@@ -220,6 +220,11 @@ export interface BuildRecord {
   alive: boolean;
 }
 
+export interface RecoverInstancesResponse {
+  recovered: Instance[];
+  instances: Instance[];
+}
+
 // API methods --------------------------------------------------------------
 
 export const api = {
@@ -267,6 +272,10 @@ export const api = {
     apiFetch<{ instance: Instance; logs: string[] }>(`/api/instances/${id}`),
   startInstance: (id: string) =>
     apiFetch<{ instance: Instance }>(`/api/instances/${id}/start`, {
+      method: "POST",
+    }),
+  recoverInstances: () =>
+    apiFetch<RecoverInstancesResponse>("/api/instances/recover", {
       method: "POST",
     }),
   stopInstance: (id: string) =>
