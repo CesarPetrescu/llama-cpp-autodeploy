@@ -1,28 +1,40 @@
 # llama-cpp-autodeploy
 
-Python tooling to build `llama.cpp` and launch inference services from local or Hugging Face-hosted models.
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+" />
+  <img src="https://img.shields.io/badge/platform-Linux-111827?logo=linux&logoColor=white" alt="Linux" />
+  <img src="https://img.shields.io/badge/backend-FastAPI-05998B?logo=fastapi&logoColor=white" alt="FastAPI backend" />
+  <img src="https://img.shields.io/badge/frontend-React%20%2B%20Vite-1F2937?logo=vite&logoColor=FACC15" alt="React and Vite frontend" />
+  <img src="https://img.shields.io/badge/runtime-llama.cpp-3F3F46" alt="llama.cpp runtime" />
+</p>
 
-This repository includes:
+<p align="center">
+  Build <code>llama.cpp</code>, launch local inference services, and manage the stack from terminal or browser.
+</p>
 
-- Build automation (`autodevops.py`) for fetching/building `llama.cpp` with configurable CUDA/MMQ/BLAS/RPC options.
-- Curses TUIs for build and launch workflows (`autodevops_cli.py`, `loadmodel_cli.py`, `loadmodel_dist_cli.py`).
-- Runtime launchers for:
-  - `llama-server` (LLM + embeddings) via `loadmodel.py`
-  - distributed `llama-cli` + `rpc-server` via `loadmodel_dist_cli.py`
-  - standalone `rpc-server` via `rpc_server_cli.py`
-  - Transformers reranking via `loadmodel.py --rerank` or `reranker.py`
+<p align="center">
+  <a href="#quick-start">Quick Start</a> |
+  <a href="#build-llamacpp">Build</a> |
+  <a href="#launch-services">Launch</a> |
+  <a href="#distributed-inference-rpc">Distributed</a> |
+  <a href="#web-ui-browser-backend--frontend">Web UI</a> |
+  <a href="#tests">Tests</a>
+</p>
 
-## Repository layout
+`llama-cpp-autodeploy` keeps the repo-local workflow in one place:
+`autodevops.py` builds `llama.cpp`, `loadmodel.py` launches services, and
+`web/` wraps the same flow in a browser control plane with auth, persisted
+state, live logs, and orphaned-process recovery.
 
-- `autodevops.py` — non-interactive `llama.cpp` build script.
-- `autodevops_cli.py` — interactive build wizard (curses UI).
-- `loadmodel.py` — launcher for `llama-server` and Transformers reranker service.
-- `loadmodel_cli.py` — interactive launcher for local/HF GGUF and reranker workflows.
-- `loadmodel_dist_cli.py` — interactive distributed launcher (RPC worker discovery + launch).
-- `rpc_server_cli.py` — helper wrapper for `./bin/rpc-server`.
-- `reranker.py` — standalone Transformers reranker CLI/HTTP server.
-- `run/` — sample shell launch scripts.
-- `tests/` — unit tests for build + build-TUI configuration logic.
+## What's included
+
+| Surface | Entry points | Purpose |
+| --- | --- | --- |
+| Build | `autodevops.py`, `autodevops_cli.py` | Build repo-local `llama.cpp` with CUDA, MMQ, BLAS, and RPC options |
+| Local inference | `loadmodel.py`, `loadmodel_cli.py` | Launch `llama-server` for chat or embedding workloads |
+| Reranking | `loadmodel.py --rerank`, `reranker.py` | Run a Transformers reranker HTTP service |
+| Distributed inference | `loadmodel_dist_cli.py`, `rpc_server_cli.py` | Manage `llama-cli` + `rpc-server` worker setups |
+| Browser control plane | `web_cli.py`, `web/backend`, `web/frontend` | Build, launch, inspect logs, plan memory, recover instances |
 
 ## Requirements
 
@@ -35,14 +47,20 @@ This repository includes:
 
 Python dependencies are in `requirements.txt` (PyTorch CUDA 12.9 index + Transformers stack).
 
-## Setup
+## Quick start
 
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
+python autodevops.py --ref latest --now
+python loadmodel.py --llm ./models/model.gguf --port 45540
+python web_cli.py --init
+python web_cli.py
 ```
+
+Use the CLI/TUI paths below when you want a more guided flow.
 
 ## Build llama.cpp
 
@@ -52,7 +70,7 @@ pip install -r requirements.txt
 python autodevops_cli.py
 ```
 
-> Note: this is a curses TUI and must run in a real terminal (not a non-interactive CI shell).
+> Note: this is a curses TUI and must run in a real terminal.
 
 ### Non-interactive
 
@@ -63,15 +81,17 @@ python autodevops.py --ref latest --now
 
 Supported build flags:
 
-- `--ref <tag|branch|commit|latest>`
-- `--now`
-- `--fast-math`
-- `--force-mmq {auto,on,off}`
-- `--blas {auto,openblas,mkl,off}`
-- `--distributed` (builds GGML RPC backend)
-- `--cpu-only` (skip NVIDIA driver precheck)
+| Flag | Meaning |
+| --- | --- |
+| `--ref <tag|branch|commit|latest>` | Build a specific upstream ref |
+| `--now` | Build immediately instead of waiting for the scheduled path |
+| `--fast-math` | Pass fast-math CUDA flags to NVCC |
+| `--force-mmq {auto,on,off}` | Control MMQ CUDA kernels |
+| `--blas {auto,openblas,mkl,off}` | Choose the CPU BLAS backend |
+| `--distributed` | Build GGML RPC support |
+| `--cpu-only` | Skip NVIDIA driver prechecks |
 
-## Run model servers
+## Launch services
 
 ### Interactive launcher
 
@@ -81,11 +101,13 @@ python loadmodel_cli.py
 
 ### Unified CLI launcher (`loadmodel.py`)
 
-`loadmodel.py` supports mutually exclusive modes:
+`loadmodel.py` supports three mutually exclusive modes:
 
-- `--llm` → starts `./bin/llama-server` completion API
-- `--embed` → starts `./bin/llama-server` embeddings API
-- `--rerank` → starts Transformers reranker HTTP service
+| Mode | Result |
+| --- | --- |
+| `--llm` | Start `./bin/llama-server` for completion/chat |
+| `--embed` | Start `./bin/llama-server` for embeddings |
+| `--rerank` | Start the Transformers reranker HTTP service |
 
 ```bash
 python loadmodel.py --help
@@ -137,21 +159,17 @@ python rpc_server_cli.py --host 0.0.0.0 --port 5515 --devices 0
 
 ## Web UI (browser backend + frontend)
 
-A FastAPI backend and React + Vite + TypeScript frontend under [web/](web/)
-turn the existing `llama.cpp` automation in this repo into a browser control
-plane. The web stack does not replace the CLI tools; it wraps the same local
-helpers and binaries with auth, state persistence, log streaming, and process
-recovery.
+A FastAPI backend plus a React + Vite + TypeScript frontend under [web/](web/)
+turn the repo into a browser control plane. It wraps the same local helpers
+already used by the CLI tools instead of inventing a separate runtime path.
 
-How the pieces fit together:
-
-- `autodevops.py` builds local `llama.cpp` binaries.
-- `loadmodel.py` launches `llama-server` and reranker processes.
-- `memory_utils.py` probes GPU VRAM, host RAM, and placement estimates.
-- `web/backend/` exposes those capabilities as a FastAPI API with WebSocket
-  log streaming, persisted instance/build state, and orphaned-process recovery.
-- `web/frontend/` is the browser UI for that backend: overview, instances,
-  memory planning, model library, build control, and settings.
+| Layer | Role |
+| --- | --- |
+| `autodevops.py` | Build local `llama.cpp` binaries |
+| `loadmodel.py` | Launch `llama-server` and reranker processes |
+| `memory_utils.py` | Probe VRAM, RAM, and placement estimates |
+| `web/backend/` | Auth, state, logs, recovery, and API surface |
+| `web/frontend/` | Browser UI for overview, builds, instances, memory, and library |
 
 ### Backend
 
@@ -163,25 +181,23 @@ python web_cli.py                        # serves on http://0.0.0.0:8787 by defa
 ```
 
 The backend binds to `0.0.0.0` by default and requires a bearer token on every
-request (`/api/health` is the only public endpoint). Change
-`host`/`port`/`models_dir` in [.web_config.json](.web_config.json). Managed
-instances and build history persist in `.web_state.json`; per-instance logs
-tee to `web/logs/<id>.log` so earlier output survives a backend restart.
-On backend startup, the manager also scans for orphaned `llama-server`
-processes launched from this repo and re-adopts them so stop/restart control
-can be recovered after a backend crash. You can force the same scan manually
-with `POST /api/instances/recover`.
+request except `GET /api/health`. Change `host`, `port`, and `models_dir` in
+[.web_config.json](.web_config.json). Managed instances and builds persist in
+`.web_state.json`, logs tee to `web/logs/<id>.log`, and the manager can
+re-adopt orphaned repo-launched `llama-server` processes on startup or through
+`POST /api/instances/recover`.
 
-Endpoints (see `GET /docs` for the full OpenAPI schema):
+<details>
+<summary>API surface</summary>
 
-- `GET  /api/health` — public health check
-- `GET  /api/memory/gpus`, `POST /api/memory/plan`, `POST /api/memory/auto-split`
-- `GET  /api/models/local`, `GET /api/models/binary-caps`, `POST /api/models/download`
-- `GET /POST /api/instances`, `GET/POST /api/instances/{id}[/start|/stop|/restart]`, `DELETE /api/instances/{id}`
-- `POST /api/instances/recover` — rescan `/proc` and adopt orphaned managed `llama-server` processes
-- `WS   /api/instances/{id}/logs?token=…` — live stdout tail
-- `GET /POST /api/builds`, `GET /api/builds/{id}`, `POST /api/builds/{id}/stop`
-- `WS   /api/builds/{id}/logs?token=…`
+- Health: `GET /api/health`
+- Memory: `GET /api/memory/gpus`, `POST /api/memory/plan`, `POST /api/memory/auto-split`
+- Models: `GET /api/models/local`, `GET /api/models/binary-caps`, `POST /api/models/download`
+- Instances: `GET /POST /api/instances`, `GET /api/instances/{id}`, `POST /api/instances/{id}/start|stop|restart`, `DELETE /api/instances/{id}`, `POST /api/instances/recover`, `WS /api/instances/{id}/logs?token=...`
+- Builds: `GET /POST /api/builds`, `GET /api/builds/{id}`, `POST /api/builds/{id}/stop`, `WS /api/builds/{id}/logs?token=...`
+
+Full schema: `GET /docs`
+</details>
 
 ### Frontend
 
@@ -198,29 +214,21 @@ at `/` so the full app is served at `http://<host>:8787`. In the UI, open
 **Settings** and paste the token printed by `python web_cli.py --init` (or
 read it from `.web_config.json`).
 
-Pages:
-
-- **Dashboard** — compact control-plane overview with backend health, host
-  CPU/RAM/load, per-core telemetry, GPU runtime/process ownership, and
-  expandable build/fleet detail
-- **Instances** — create/start/stop/restart/delete `llama-server` processes
-  with a form mirroring `loadmodel_cli.py` (mode, model ref, n-gpu-layers,
-  tensor-split, ctx-size, cpu-moe, jinja, extra flags, …)
-- **Instance logs** — live WebSocket tail with pause/resume
-- **Memory** — live `detect_gpus()` probe + `estimate_memory_profile()`
-  per-GPU weight/KV preview
-- **Library** — scan `./models` for GGUFs and download new ones from
-  Hugging Face via `resolve_gguf()`
-- **Builds** — trigger `autodevops.py`, inspect the real supported flag
-  surface, preview the command, and stream the build log
-- **Settings** — backend URL + bearer token
+| Page | Focus |
+| --- | --- |
+| **Dashboard** | Backend health, fleet status, host telemetry, GPU pressure, builds |
+| **Instances** | Create, recover, start, stop, restart, and delete `llama-server` processes |
+| **Instance logs** | Live WebSocket tail with pause/resume |
+| **Memory** | Live GPU probe plus `estimate_memory_profile()` previews |
+| **Library** | Scan `./models` and download GGUFs from Hugging Face |
+| **Builds** | Trigger `autodevops.py`, inspect flags, preview commands, stream logs |
+| **Settings** | Backend URL and bearer token |
 
 Screenshots:
 
 #### Dashboard Overview
 
-Main control-plane view with backend health, fleet summary, host CPU/RAM/load,
-alerts, and recent activity.
+Main control-plane view with backend health, fleet summary, and host telemetry.
 
 <p align="center">
   <img src="docs/screenshots/web-dashboard-overview.png" alt="Dashboard overview" width="100%" />
@@ -228,8 +236,7 @@ alerts, and recent activity.
 
 #### GPU Runtime Detail
 
-Expandable GPU runtime panel showing compute pressure, VRAM usage, and which
-managed processes currently own device memory.
+Expandable GPU panel with compute pressure, VRAM usage, and process ownership.
 
 <p align="center">
   <img src="docs/screenshots/web-dashboard-gpu.png" alt="Dashboard GPU runtime panel" width="100%" />
@@ -237,8 +244,7 @@ managed processes currently own device memory.
 
 #### Instances
 
-Launch and recover `llama-server` processes with the same knobs exposed by the
-local launcher flow.
+Launch and recover `llama-server` processes with the same knobs as the local launcher flow.
 
 <p align="center">
   <img src="docs/screenshots/web-instances.png" alt="Instances page" width="100%" />
@@ -246,8 +252,7 @@ local launcher flow.
 
 #### Builds
 
-Browser view for `autodevops.py`, including supported flags, command preview,
-build history, and streamed build logs.
+Browser view for `autodevops.py`, including flags, command preview, and build history.
 
 <p align="center">
   <img src="docs/screenshots/web-builds.png" alt="Builds page" width="100%" />
@@ -255,8 +260,7 @@ build history, and streamed build logs.
 
 #### Mobile Dashboard
 
-Same overview on a narrow viewport, with the shell, stats, and disclosures
-compressed for phone-sized screens.
+Phone-sized overview with the shell, stats, and disclosures compressed cleanly.
 
 <p align="center">
   <img src="docs/screenshots/web-dashboard-mobile.png" alt="Dashboard on mobile" width="42%" />
@@ -264,14 +268,14 @@ compressed for phone-sized screens.
 
 #### Mobile Builds
 
-Build history and command controls rendered for a narrow viewport without the
-header and usage blocks taking over the screen.
+Build history and command controls on a narrow viewport without wasting the first screen.
 
 <p align="center">
   <img src="docs/screenshots/web-builds-mobile.png" alt="Builds on mobile" width="42%" />
 </p>
 
-Refresh the screenshots:
+<details>
+<summary>Refresh screenshot assets</summary>
 
 ```bash
 cd web/frontend
@@ -282,6 +286,7 @@ print(json.load(open('../../.web_config.json', 'r', encoding='utf-8'))['token'])
 PY
 )" npm run screenshots:readme
 ```
+</details>
 
 ### Security notes
 
