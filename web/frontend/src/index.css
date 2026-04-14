@@ -7,8 +7,8 @@
 :root {
   color-scheme: dark;
   --brand-lime: #d5ff40;
-  --brand-bone: #dbe4ef;
-  --brand-ink: #0f172a;
+  --brand-bone: #e9eae5;
+  --brand-ink: #141814;
 }
 
 html,
@@ -25,11 +25,12 @@ body {
   font-family: "Fira Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     Roboto, sans-serif;
   background:
-    radial-gradient(1200px 680px at 10% -10%, rgba(34, 197, 94, 0.12), transparent 58%),
-    radial-gradient(900px 500px at 110% 10%, rgba(14, 165, 233, 0.1), transparent 55%),
-    radial-gradient(1100px 700px at 50% 120%, rgba(37, 99, 235, 0.1), transparent 62%),
-    linear-gradient(180deg, rgba(8, 14, 25, 0.96), rgba(2, 8, 23, 1));
-  background-color: #020817;
+    radial-gradient(960px 620px at 12% -8%, rgba(213, 255, 64, 0.15), transparent 58%),
+    radial-gradient(760px 520px at 100% 2%, rgba(159, 201, 26, 0.08), transparent 56%),
+    radial-gradient(1100px 760px at 50% 120%, rgba(20, 24, 20, 0.28), transparent 62%),
+    linear-gradient(180deg, rgba(15, 19, 15, 0.98), rgba(10, 13, 10, 1) 48%, rgba(2, 3, 2, 1));
+  background-attachment: fixed;
+  background-color: #020302;
   color: #f8fafc;
   letter-spacing: -0.005em;
   -webkit-font-smoothing: antialiased;
@@ -75,9 +76,9 @@ h4 {
   top: 1rem;
   z-index: 100;
   transform: translateY(-140%);
-  border-radius: 999px;
+  border-radius: 0;
   border: 1px solid rgba(213, 255, 64, 0.5);
-  background: rgba(15, 23, 42, 0.95);
+  background: rgba(20, 24, 20, 0.96);
   padding: 0.6rem 0.9rem;
   color: #f8fafc;
   font-size: 0.875rem;
@@ -90,13 +91,13 @@ h4 {
 
 @layer components {
   .brand-surface {
-    @apply rounded-[1.75rem] border border-white/10 bg-ink-300/80 shadow-panel backdrop-blur;
+    @apply rounded-none border border-white/10 bg-ink-300/80 shadow-panel backdrop-blur-xl;
   }
   .brand-surface-muted {
-    @apply rounded-2xl border border-white/10 bg-ink-200/80 shadow-panel;
+    @apply rounded-none border border-white/10 bg-ink-200/70 shadow-panel;
   }
   .brand-chip {
-    @apply inline-flex items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-bone-200;
+    @apply inline-flex items-center gap-1 rounded-none border border-white/10 bg-ink-200/80 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.18em] text-bone-200;
   }
   .brand-label {
     @apply text-[11px] font-semibold uppercase tracking-[0.2em] text-bone-400;
@@ -108,16 +109,16 @@ h4 {
     @apply text-sm text-bone-300;
   }
   .brand-input {
-    @apply w-full rounded-xl border border-white/10 bg-ink-400/80 px-3.5 py-2.5 text-sm text-bone-50 placeholder:text-bone-500 focus:border-lime-300 focus:outline-none focus:ring-2 focus:ring-lime-300/30;
+    @apply w-full rounded-none border border-white/10 bg-ink-400/80 px-3.5 py-2.5 text-sm text-bone-50 placeholder:text-bone-500 focus:border-lime-300 focus:outline-none focus:ring-2 focus:ring-lime-300/30;
   }
   .brand-btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-none px-4 py-2.5 text-sm font-semibold active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
   }
   .brand-btn-primary {
     @apply brand-btn bg-lime-300 text-ink-900 hover:bg-lime-200 shadow-glow-lime;
   }
   .brand-btn-ghost {
-    @apply brand-btn border border-white/10 bg-white/[0.04] text-bone-50 hover:border-lime-300/60 hover:text-lime-200;
+    @apply brand-btn border border-white/10 bg-ink-200/80 text-bone-50 hover:border-lime-300/60 hover:bg-ink-100/80 hover:text-lime-200;
   }
   .brand-btn-danger {
     @apply brand-btn border border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20;
@@ -129,8 +130,36 @@ h4 {
     @apply brand-surface flex min-h-[8.75rem] flex-col justify-between p-5;
   }
   .brand-table-wrap {
-    @apply overflow-x-auto rounded-[1.25rem] border border-white/10 bg-ink-200/60;
+    @apply overflow-x-auto rounded-none border border-white/10 bg-ink-500/60;
   }
+  .brand-code-block {
+    @apply block w-full max-w-full overflow-hidden border border-white/10 bg-ink-400/70 px-3 py-2 font-mono text-[11px] normal-case tracking-normal text-bone-100;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .brand-disclosure {
+    @apply border border-white/10 bg-ink-400/50;
+  }
+  .brand-disclosure > summary {
+    @apply flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 transition-colors duration-200 hover:bg-ink-200/40;
+  }
+  .brand-disclosure > summary::-webkit-details-marker {
+    display: none;
+  }
+  .brand-disclosure-body {
+    @apply border-t border-white/10 p-4;
+  }
+  .brand-disclosure-chevron {
+    @apply h-4 w-4 text-bone-300 transition-transform duration-200;
+  }
+  .brand-scroll-pane {
+    @apply overflow-auto;
+  }
+}
+
+.brand-disclosure[open] .brand-disclosure-chevron {
+  transform: rotate(90deg);
 }
 
 /* Log pane keeps mono font regardless of body stack */
@@ -152,7 +181,7 @@ h4 {
 }
 *::-webkit-scrollbar-thumb {
   background: rgba(192, 194, 184, 0.14);
-  border-radius: 9999px;
+  border-radius: 0;
   border: 2px solid transparent;
   background-clip: padding-box;
 }

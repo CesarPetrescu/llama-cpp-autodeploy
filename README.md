@@ -190,7 +190,9 @@ at `/` so the full app is served at `http://<host>:8787`. In the UI, open
 **Settings** and paste the token printed by `python web_cli.py --init` (or
 read it from `.web_config.json`). Pages:
 
-- **Dashboard** — backend health, GPU stats, running-instance summary
+- **Dashboard** — compact control-plane overview with backend health, host
+  CPU/RAM/load, per-core telemetry, GPU runtime/process ownership, and
+  expandable build/fleet detail
 - **Instances** — create/start/stop/restart/delete `llama-server` processes
   with a form mirroring `loadmodel_cli.py` (mode, model ref, n-gpu-layers,
   tensor-split, ctx-size, cpu-moe, jinja, extra flags, …)
@@ -199,8 +201,32 @@ read it from `.web_config.json`). Pages:
   per-GPU weight/KV preview
 - **Library** — scan `./models` for GGUFs and download new ones from
   Hugging Face via `resolve_gguf()`
-- **Builds** — trigger `autodevops.py` and stream the build log
+- **Builds** — trigger `autodevops.py`, inspect the real supported flag
+  surface, preview the command, and stream the build log
 - **Settings** — backend URL + bearer token
+
+Current UI:
+
+<p>
+  <img src="docs/screenshots/web-dashboard-overview.png" alt="Dashboard overview" width="49%" />
+  <img src="docs/screenshots/web-dashboard-gpu.png" alt="Dashboard GPU runtime panel" width="49%" />
+</p>
+<p>
+  <img src="docs/screenshots/web-instances.png" alt="Instances page" width="49%" />
+  <img src="docs/screenshots/web-builds.png" alt="Builds page" width="49%" />
+</p>
+
+Refresh the screenshots:
+
+```bash
+cd web/frontend
+npx playwright install chromium
+WEB_BEARER_TOKEN="$(python - <<'PY'
+import json
+print(json.load(open('../../.web_config.json', 'r', encoding='utf-8'))['token'])
+PY
+)" npm run screenshots:readme
+```
 
 ### Security notes
 

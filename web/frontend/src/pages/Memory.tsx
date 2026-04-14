@@ -71,9 +71,9 @@ export default function Memory() {
                 <div className="mt-2 text-[11px] uppercase tracking-wider text-bone-500">
                   {g.free_h} free · {g.total_h} total
                 </div>
-                <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/5">
+                <div className="mt-3 h-2 w-full overflow-hidden rounded-none bg-ink-500/90">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-lime-300 to-lime-500 shadow-[0_0_14px_rgba(213,255,64,0.45)]"
+                    className="h-full rounded-none bg-gradient-to-r from-lime-300 to-lime-500 shadow-[0_0_14px_rgba(213,255,64,0.45)]"
                     style={{ width: `${pct}%` }}
                   />
                 </div>
@@ -81,7 +81,7 @@ export default function Memory() {
             );
           })}
           {gpus.data?.gpus.length === 0 && (
-            <div className="col-span-full rounded-xl border border-white/5 bg-white/[0.02] p-4 text-sm text-bone-400">
+            <div className="col-span-full rounded-none border border-white/10 bg-ink-400/70 p-4 text-sm text-bone-400">
               No CUDA devices detected.
             </div>
           )}
@@ -142,7 +142,7 @@ export default function Memory() {
             <ul className="space-y-1.5 text-bone-200">
               {plan.data.summary.map((line, i) => (
                 <li key={i} className="flex items-start gap-2">
-                  <span className="mt-1.5 h-1 w-1 rounded-full bg-lime-300" />
+                  <span className="mt-1.5 h-1 w-1 rounded-none bg-lime-300" />
                   {line}
                 </li>
               ))}
@@ -167,7 +167,7 @@ export default function Memory() {
               </div>
             )}
             {plan.data.warnings.length > 0 && (
-              <div className="rounded-xl border border-amber-400/40 bg-amber-400/10 p-3 text-xs text-amber-200">
+              <div className="rounded-none border border-amber-400/40 bg-amber-400/10 p-3 text-xs text-amber-200">
                 {plan.data.warnings.map((w, i) => (
                   <div key={i}>⚠ {w}</div>
                 ))}

@@ -9,11 +9,11 @@ interface Props {
 
 export function PageHeader({ eyebrow, title, description, actions }: Props) {
   return (
-    <header className="brand-surface mb-6 flex flex-col gap-5 px-5 py-5 sm:flex-row sm:items-end sm:justify-between sm:px-6">
-      <div className="min-w-0">
+    <header className="brand-surface mb-6 flex flex-col gap-5 px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
+      <div className="min-w-0 sm:flex-1">
         {eyebrow && (
           <div className="brand-chip mb-3">
-            <span className="h-1.5 w-1.5 rounded-full bg-lime-300" />
+            <span className="h-1.5 w-1.5 rounded-none bg-lime-300" />
             {eyebrow}
           </div>
         )}
@@ -27,7 +27,7 @@ export function PageHeader({ eyebrow, title, description, actions }: Props) {
         )}
       </div>
       {actions && (
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <div className="flex min-w-0 w-full flex-wrap items-start gap-2 sm:w-auto sm:max-w-[40rem] sm:justify-end">
           {actions}
         </div>
       )}

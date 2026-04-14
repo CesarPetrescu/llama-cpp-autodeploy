@@ -101,7 +101,7 @@ export default function Library() {
         </form>
         {msg && (
           <p className="mt-3 text-sm text-lime-200">
-            <span className="mr-2 inline-block h-1 w-1 rounded-full bg-lime-300" />
+            <span className="mr-2 inline-block h-1 w-1 rounded-none bg-lime-300" />
             {msg}
           </p>
         )}
@@ -113,7 +113,7 @@ export default function Library() {
       >
         <div className="brand-table-wrap">
           <table className="min-w-[720px] w-full text-sm">
-            <thead className="bg-white/[0.03]">
+            <thead className="bg-ink-400/78">
               <tr className="text-left text-[10px] uppercase tracking-[0.18em] text-bone-500">
                 <th className="px-4 py-2.5 font-semibold">Name</th>
                 <th className="px-4 py-2.5 font-semibold">Size</th>
@@ -128,7 +128,7 @@ export default function Library() {
               {local.data?.models.map((m) => (
                 <tr
                   key={m.path}
-                  className="border-t border-white/10 hover:bg-white/[0.03]"
+                  className="border-t border-white/10 hover:bg-ink-300/50"
                 >
                   <td
                     className="px-4 py-3 font-medium text-bone-50"

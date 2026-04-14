@@ -21,7 +21,7 @@ export function LogPane({ lines, autoscroll = true, height = "60vh" }: Props) {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setPaused((p) => !p)}
-            className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1 font-semibold text-bone-100 hover:border-lime-300/50 hover:text-lime-200"
+            className="rounded-none border border-white/10 bg-ink-200/80 px-2.5 py-1 font-semibold text-bone-100 hover:border-lime-300/50 hover:bg-ink-100/78 hover:text-lime-200"
           >
             {paused ? "Resume" : "Pause"}
           </button>
@@ -31,7 +31,7 @@ export function LogPane({ lines, autoscroll = true, height = "60vh" }: Props) {
       </div>
       <div
         ref={ref}
-        className="log-pane overflow-auto rounded-xl border border-white/5 bg-ink-700/80 p-4 text-bone-200 shadow-panel"
+        className="log-pane overflow-auto rounded-none border border-white/10 bg-ink-600/88 p-4 text-bone-200 shadow-panel"
         style={{ height }}
       >
         {lines.length === 0 ? (

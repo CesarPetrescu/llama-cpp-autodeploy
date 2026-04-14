@@ -418,7 +418,7 @@ export default function Instances() {
       />
 
       {instanceMessage && (
-        <div className="rounded-2xl border border-lime-300/25 bg-lime-300/10 px-4 py-3 text-sm text-lime-100">
+        <div className="rounded-none border border-lime-300/25 bg-lime-300/10 px-4 py-3 text-sm text-lime-100">
           {instanceMessage}
         </div>
       )}
@@ -599,7 +599,7 @@ export default function Instances() {
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        className={`rounded-xl px-3 py-2 text-xs font-semibold ${selectedGpuIndices.length === gpus.length && gpus.length > 0 ? "bg-lime-300 text-ink-900 shadow-glow-lime" : "border border-white/10 bg-white/[0.04] text-bone-200 hover:border-lime-300/40"}`}
+                        className={`rounded-none px-3 py-2 text-xs font-semibold ${selectedGpuIndices.length === gpus.length && gpus.length > 0 ? "bg-lime-300 text-ink-900 shadow-glow-lime" : "border border-white/10 bg-ink-300/72 text-bone-200 hover:border-lime-300/40 hover:bg-ink-200/82"}`}
                         onClick={() => setGpuSelection(gpus.map((gpu) => gpu.index))}
                         disabled={gpus.length === 0}
                       >
@@ -607,7 +607,7 @@ export default function Instances() {
                       </button>
                       <button
                         type="button"
-                        className={`rounded-xl px-3 py-2 text-xs font-semibold ${selectedGpuIndices.length === 0 ? "bg-amber-400 text-ink-900" : "border border-white/10 bg-white/[0.04] text-bone-200 hover:border-amber-300/40"}`}
+                        className={`rounded-none px-3 py-2 text-xs font-semibold ${selectedGpuIndices.length === 0 ? "bg-amber-400 text-ink-900" : "border border-white/10 bg-ink-300/72 text-bone-200 hover:border-amber-300/40 hover:bg-ink-200/82"}`}
                         onClick={() => setStrategy("cpu")}
                       >
                         CPU only
@@ -622,7 +622,7 @@ export default function Instances() {
                             type="button"
                             key={gpu.index}
                             onClick={() => toggleGpu(gpu.index)}
-                            className={`rounded-2xl border p-3 text-left ${active ? "border-lime-300/60 bg-lime-300/10 shadow-[0_0_0_1px_rgba(213,255,64,0.2)]" : "border-white/10 bg-ink-300/60 hover:border-white/20"}`}
+                            className={`rounded-none border p-3 text-left ${active ? "border-lime-300/60 bg-lime-300/10 shadow-[0_0_0_1px_rgba(213,255,64,0.2)]" : "border-white/10 bg-ink-300/60 hover:border-white/20"}`}
                           >
                             <div className="font-medium text-bone-50">
                               #{gpu.index} {gpu.name}
@@ -634,7 +634,7 @@ export default function Instances() {
                         );
                       })}
                       {gpus.length === 0 && (
-                        <div className="rounded-2xl border border-white/10 bg-ink-300/60 p-3 text-sm text-bone-400">
+                        <div className="rounded-none border border-white/10 bg-ink-300/60 p-3 text-sm text-bone-400">
                           No CUDA devices detected. CPU-only launch is still available.
                         </div>
                       )}
@@ -649,7 +649,7 @@ export default function Instances() {
                       />
                     </Field>
 
-                    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-3 text-xs text-bone-300">
+                    <div className="rounded-none border border-white/10 bg-ink-400/72 px-3 py-3 text-xs text-bone-300">
                       Visibility: <span className="text-lime-300">{formatGpuVisibility(config, gpus)}</span>
                     </div>
                   </div>
@@ -750,7 +750,7 @@ export default function Instances() {
       >
         <div className="brand-table-wrap">
           <table className="min-w-[980px] w-full text-sm">
-            <thead className="bg-white/[0.03]">
+            <thead className="bg-ink-400/78">
               <tr className="text-left text-[10px] uppercase tracking-[0.18em] text-bone-500">
                 <th className="px-4 py-2.5 font-semibold">Name</th>
                 <th className="px-4 py-2.5 font-semibold">Status</th>
@@ -764,7 +764,7 @@ export default function Instances() {
               {query.data?.instances.map((inst: Instance) => (
                 <tr
                   key={inst.id}
-                  className="border-t border-white/10 hover:bg-white/[0.03]"
+                  className="border-t border-white/10 hover:bg-ink-300/50"
                 >
                   <td className="px-4 py-3 font-medium text-bone-50">
                     {inst.name}

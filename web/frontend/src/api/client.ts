@@ -93,10 +93,52 @@ export interface HealthResponse {
 export interface GpuInfo {
   index: number;
   name: string;
+  uuid?: string | null;
   total: number | null;
   free: number | null;
+  used?: number | null;
   total_h: string;
   free_h: string;
+  used_h?: string;
+  utilization_gpu?: number | null;
+  utilization_memory?: number | null;
+  memory_percent?: number | null;
+  processes?: GpuProcessInfo[];
+}
+
+export interface GpuProcessInfo {
+  pid: number;
+  process_name: string;
+  raw_process_name?: string | null;
+  label?: string | null;
+  kind?: string | null;
+  status?: string | null;
+  detail?: string | null;
+  used_memory: number | null;
+  used_memory_h: string;
+  memory_percent?: number | null;
+}
+
+export interface SystemCoreUsage {
+  index: number;
+  percent: number | null;
+}
+
+export interface SystemUsage {
+  cpu_percent: number | null;
+  cpu_count_logical: number | null;
+  cpu_count_physical: number | null;
+  load_1: number | null;
+  load_5: number | null;
+  load_15: number | null;
+  memory_total: number | null;
+  memory_total_h: string;
+  memory_available: number | null;
+  memory_available_h: string;
+  memory_used: number | null;
+  memory_used_h: string;
+  memory_percent: number | null;
+  cores: SystemCoreUsage[];
 }
 
 export interface GpuUsage {
@@ -150,6 +192,17 @@ export interface LocalModel {
 export interface SupportedFlags {
   bool_flags: string[];
   choice_flags: Record<string, string[]>;
+  value_flags: string[];
+  usage: string;
+  summary: string;
+  options: Array<{
+    flag: string;
+    syntax: string;
+    description: string;
+    choices: string[];
+    metavar: string | null;
+    kind: "bool" | "choice" | "value" | "meta";
+  }>;
 }
 
 export interface InstancesEvent {
@@ -217,6 +270,8 @@ export interface BuildRecord {
   status: "pending" | "running" | "cancelling" | "cancelled" | "success" | "failure";
   log_file: string | null;
   pid: number | null;
+  pgid?: number | null;
+  cmdline?: string[];
   alive: boolean;
 }
 
@@ -229,7 +284,7 @@ export interface RecoverInstancesResponse {
 
 export const api = {
   health: () => apiFetch<HealthResponse>("/api/health"),
-  listGpus: () => apiFetch<{ gpus: GpuInfo[] }>("/api/memory/gpus"),
+  listGpus: () => apiFetch<{ gpus: GpuInfo[]; system: SystemUsage }>("/api/memory/gpus"),
   planMemory: (state: Record<string, unknown>) =>
     apiFetch<MemoryPlan>("/api/memory/plan", {
       method: "POST",

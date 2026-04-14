@@ -29,7 +29,7 @@ export function Panel({
             )}
             {subtitle && <p className="text-sm leading-6 text-bone-300">{subtitle}</p>}
           </div>
-          {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+          {actions && <div className="flex min-w-0 w-full flex-wrap items-start gap-2 sm:w-auto sm:max-w-[36rem] sm:justify-end">{actions}</div>}
         </header>
       )}
       {children}

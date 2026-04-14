@@ -31,11 +31,13 @@ try:
     from fastapi.testclient import TestClient  # type: ignore
     from web.backend import auth  # noqa: E402
     from web.backend.routes import builds as builds_route  # noqa: E402
+    from web.backend.routes import memory as memory_route  # noqa: E402
     FASTAPI_OK = True
 except Exception:  # pragma: no cover - optional outside the project venv
     TestClient = None  # type: ignore[assignment]
     auth = None  # type: ignore[assignment]
     builds_route = None  # type: ignore[assignment]
+    memory_route = None  # type: ignore[assignment]
     FASTAPI_OK = False
 
 
@@ -419,6 +421,10 @@ class BuildFlagTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--force-mmq", spec["choice_flags"])
         self.assertIn("--blas", spec["choice_flags"])
         self.assertIn("--fast-math", spec["bool_flags"])
+        self.assertIn("--ref", spec["value_flags"])
+        option_map = {option["flag"]: option for option in spec["options"]}
+        self.assertEqual(option_map["--ref"]["kind"], "value")
+        self.assertIn("git tag/branch/commit", option_map["--ref"]["description"])
 
     async def test_validate_rejects_unknown_choice(self):
         req = builds_route.BuildRequest(blas="bogus")
@@ -553,6 +559,83 @@ class RouteTests(unittest.TestCase):
         finally:
             if log_file.exists():
                 log_file.unlink()
+
+    def test_memory_gpu_route_includes_system_and_processes(self):
+        manager = self.app.state.manager
+        manager._instances["gpuinst"] = process_manager.ManagedInstance(
+            record=state_mod.InstanceRecord(
+                id="gpuinst",
+                name="chat-prod",
+                status="running",
+                pid=4242,
+                host="127.0.0.1",
+                port=45540,
+            ),
+            log_buffer=LogBuffer(),
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_detect_gpu_runtime(*, managed_processes):
+            captured["managed_processes"] = managed_processes
+            return [
+                {
+                    "index": 0,
+                    "name": "RTX 4090",
+                    "uuid": "GPU-123",
+                    "total": 24 * 1024**3,
+                    "free": 8 * 1024**3,
+                    "used": 16 * 1024**3,
+                    "utilization_gpu": 81,
+                    "utilization_memory": 44,
+                    "memory_percent": 66.7,
+                    "processes": [
+                        {
+                            "pid": 4242,
+                            "process_name": "llama-server",
+                            "raw_process_name": "llama-server",
+                            "label": "chat-prod",
+                            "kind": "instance",
+                            "status": "running",
+                            "detail": "127.0.0.1:45540",
+                            "used_memory": 6 * 1024**3,
+                            "memory_percent": 25.0,
+                        }
+                    ],
+                }
+            ]
+
+        with mock.patch.object(memory_route.memory_utils, "detect_gpu_runtime", side_effect=fake_detect_gpu_runtime), \
+             mock.patch.object(
+                 memory_route.memory_utils,
+                 "detect_system_usage",
+                 return_value={
+                     "cpu_percent": 41.5,
+                     "cpu_count_logical": 32,
+                     "cpu_count_physical": 16,
+                     "load_1": 1.25,
+                     "load_5": 1.1,
+                     "load_15": 0.95,
+                     "memory_total": 64 * 1024**3,
+                     "memory_available": 20 * 1024**3,
+                     "memory_used": 44 * 1024**3,
+                     "memory_percent": 68.8,
+                     "cores": [{"index": 0, "percent": 52.0}],
+                 },
+             ):
+            r = self.client.get("/api/memory/gpus", headers=self._hdr())
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(4242, captured["managed_processes"])
+        self.assertEqual(captured["managed_processes"][4242]["label"], "chat-prod")
+
+        body = r.json()
+        self.assertEqual(body["system"]["cpu_percent"], 41.5)
+        self.assertEqual(body["system"]["memory_used_h"], "44.00 GB")
+        self.assertEqual(body["gpus"][0]["utilization_gpu"], 81)
+        self.assertEqual(body["gpus"][0]["used_h"], "16.00 GB")
+        self.assertEqual(body["gpus"][0]["processes"][0]["label"], "chat-prod")
+        self.assertEqual(body["gpus"][0]["processes"][0]["used_memory_h"], "6.00 GB")
 
     def test_instance_log_websocket_accepts_active_reattached_process(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)

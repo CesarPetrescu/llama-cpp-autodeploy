@@ -36,11 +36,19 @@ export function useManagedWebSocket({
     let attempt = 0;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let initialTimer: number | null = null;
 
     const clearReconnect = () => {
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
         reconnectTimer = null;
+      }
+    };
+
+    const clearInitial = () => {
+      if (initialTimer !== null) {
+        window.clearTimeout(initialTimer);
+        initialTimer = null;
       }
     };
 
@@ -94,15 +102,23 @@ export function useManagedWebSocket({
       };
     };
 
-    void openSocket("initial");
+    initialTimer = window.setTimeout(() => {
+      initialTimer = null;
+      void openSocket("initial");
+    }, 0);
 
     return () => {
       cancelled = true;
       clearReconnect();
+      clearInitial();
       const active = socket;
       socket = null;
       if (active) {
         try {
+          active.onopen = null;
+          active.onmessage = null;
+          active.onerror = null;
+          active.onclose = null;
           active.close();
         } catch {
           /* noop */
