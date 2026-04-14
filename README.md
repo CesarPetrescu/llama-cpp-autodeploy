@@ -138,12 +138,20 @@ python rpc_server_cli.py --host 0.0.0.0 --port 5515 --devices 0
 ## Web UI (browser backend + frontend)
 
 A FastAPI backend and React + Vite + TypeScript frontend under [web/](web/)
-let you manage `llama-server` instances, stream logs over WebSocket, preview
-memory plans, browse the model library, and trigger `autodevops.py` builds
-from a browser. It reuses the same Python helpers as the TUIs
-([loadmodel.py](loadmodel.py), [memory_utils.py](memory_utils.py),
-[autodevops.py](autodevops.py)) so behaviour is consistent across both
-surfaces.
+turn the existing `llama.cpp` automation in this repo into a browser control
+plane. The web stack does not replace the CLI tools; it wraps the same local
+helpers and binaries with auth, state persistence, log streaming, and process
+recovery.
+
+How the pieces fit together:
+
+- `autodevops.py` builds local `llama.cpp` binaries.
+- `loadmodel.py` launches `llama-server` and reranker processes.
+- `memory_utils.py` probes GPU VRAM, host RAM, and placement estimates.
+- `web/backend/` exposes those capabilities as a FastAPI API with WebSocket
+  log streaming, persisted instance/build state, and orphaned-process recovery.
+- `web/frontend/` is the browser UI for that backend: overview, instances,
+  memory planning, model library, build control, and settings.
 
 ### Backend
 
@@ -188,7 +196,9 @@ npm run build      # writes web/frontend/dist/
 When `web/frontend/dist/` exists, `python web_cli.py` automatically mounts it
 at `/` so the full app is served at `http://<host>:8787`. In the UI, open
 **Settings** and paste the token printed by `python web_cli.py --init` (or
-read it from `.web_config.json`). Pages:
+read it from `.web_config.json`).
+
+Pages:
 
 - **Dashboard** — compact control-plane overview with backend health, host
   CPU/RAM/load, per-core telemetry, GPU runtime/process ownership, and
@@ -205,15 +215,42 @@ read it from `.web_config.json`). Pages:
   surface, preview the command, and stream the build log
 - **Settings** — backend URL + bearer token
 
-Current UI:
+Screenshots:
 
-<p>
-  <img src="docs/screenshots/web-dashboard-overview.png" alt="Dashboard overview" width="49%" />
-  <img src="docs/screenshots/web-dashboard-gpu.png" alt="Dashboard GPU runtime panel" width="49%" />
+#### Dashboard Overview
+
+Main control-plane view with backend health, fleet summary, host CPU/RAM/load,
+alerts, and recent activity.
+
+<p align="center">
+  <img src="docs/screenshots/web-dashboard-overview.png" alt="Dashboard overview" width="100%" />
 </p>
-<p>
-  <img src="docs/screenshots/web-instances.png" alt="Instances page" width="49%" />
-  <img src="docs/screenshots/web-builds.png" alt="Builds page" width="49%" />
+
+#### GPU Runtime Detail
+
+Expandable GPU runtime panel showing compute pressure, VRAM usage, and which
+managed processes currently own device memory.
+
+<p align="center">
+  <img src="docs/screenshots/web-dashboard-gpu.png" alt="Dashboard GPU runtime panel" width="100%" />
+</p>
+
+#### Instances
+
+Launch and recover `llama-server` processes with the same knobs exposed by the
+local launcher flow.
+
+<p align="center">
+  <img src="docs/screenshots/web-instances.png" alt="Instances page" width="100%" />
+</p>
+
+#### Builds
+
+Browser view for `autodevops.py`, including supported flags, command preview,
+build history, and streamed build logs.
+
+<p align="center">
+  <img src="docs/screenshots/web-builds.png" alt="Builds page" width="100%" />
 </p>
 
 Refresh the screenshots:
