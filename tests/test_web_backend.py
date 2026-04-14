@@ -31,11 +31,13 @@ try:
     from fastapi.testclient import TestClient  # type: ignore
     from web.backend import auth  # noqa: E402
     from web.backend.routes import builds as builds_route  # noqa: E402
+    from web.backend.routes import memory as memory_route  # noqa: E402
     FASTAPI_OK = True
 except Exception:  # pragma: no cover - optional outside the project venv
     TestClient = None  # type: ignore[assignment]
     auth = None  # type: ignore[assignment]
     builds_route = None  # type: ignore[assignment]
+    memory_route = None  # type: ignore[assignment]
     FASTAPI_OK = False
 
 
@@ -53,6 +55,21 @@ class contextlib_suppress:
 
     def __exit__(self, exc_type, exc, tb):
         return exc_type is not None and issubclass(exc_type, self._exceptions)
+
+
+def _write_fake_llama_server(base_dir: Path) -> Path:
+    path = base_dir / "bin" / "llama-server"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "import time\n"
+        'print("ready", flush=True)\n'
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
 
 
 class ConfigTests(unittest.TestCase):
@@ -300,6 +317,51 @@ class ProcessManagerTests(unittest.IsolatedAsyncioTestCase):
         data = self.pm.serialize_instance("stopping")
         self.assertEqual(data["status"], "stopped")
 
+    async def test_startup_recovers_orphan_repo_llama_server(self):
+        fake_server = _write_fake_llama_server(self.root)
+        log_file = self.root / "orphan.log"
+        with log_file.open("a", encoding="utf-8") as sink:
+            proc = subprocess.Popen(
+                [
+                    str(fake_server),
+                    "--model",
+                    "/tmp/fake.gguf",
+                    "--host",
+                    "0.0.0.0",
+                    "--port",
+                    "45566",
+                    "--ctx-size",
+                    "8192",
+                    "--embeddings",
+                    "--flash-attn",
+                    "on",
+                ],
+                stdout=sink,
+                stderr=sink,
+                start_new_session=True,
+            )
+        self._pids_to_cleanup.append(proc.pid)
+        await asyncio.sleep(0.4)
+
+        with mock.patch.object(process_manager, "LLAMA_SERVER", fake_server):
+            await self.pm.startup()
+
+        instances = self.pm.list_instances()
+        recovered = next(inst for inst in instances if inst["pid"] == proc.pid)
+        self.assertTrue(recovered["alive"])
+        self.assertEqual(recovered["status"], "running")
+        self.assertEqual(recovered["host"], "0.0.0.0")
+        self.assertEqual(recovered["port"], 45566)
+        self.assertEqual(recovered["config"]["mode"], "embed")
+        self.assertEqual(recovered["config"]["model_ref"], "/tmp/fake.gguf")
+        self.assertEqual(recovered["log_file"], str(log_file))
+        logs = [line.rstrip() for line in self.pm.get_instance_logs(recovered["id"])]
+        self.assertTrue(any("ready" in line for line in logs))
+
+        await self.pm.stop_instance(recovered["id"])
+        proc.wait(timeout=2)
+        self.assertIsNotNone(proc.returncode)
+
     async def test_running_build_without_identity_becomes_failure_on_startup(self):
         rec = state_mod.BuildRecord(
             id="build-no-id",
@@ -359,6 +421,10 @@ class BuildFlagTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--force-mmq", spec["choice_flags"])
         self.assertIn("--blas", spec["choice_flags"])
         self.assertIn("--fast-math", spec["bool_flags"])
+        self.assertIn("--ref", spec["value_flags"])
+        option_map = {option["flag"]: option for option in spec["options"]}
+        self.assertEqual(option_map["--ref"]["kind"], "value")
+        self.assertIn("git tag/branch/commit", option_map["--ref"]["description"])
 
     async def test_validate_rejects_unknown_choice(self):
         req = builds_route.BuildRequest(blas="bogus")
@@ -411,6 +477,49 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["status"], "ok")
 
+    def test_recover_route_adopts_orphan_with_backend_marker(self):
+        self.client.get("/api/health")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_server = _write_fake_llama_server(tmp_path)
+            log_file = tmp_path / "managed.log"
+            env = os.environ.copy()
+            env[process_manager.RECOVERY_MARKER_ENV] = "1"
+            env[process_manager.RECOVERY_INSTANCE_ID_ENV] = "recoverme1234"
+            env[process_manager.RECOVERY_INSTANCE_NAME_ENV] = "Recovered via API"
+            env[process_manager.RECOVERY_LOG_FILE_ENV] = str(log_file)
+            with log_file.open("a", encoding="utf-8") as sink:
+                proc = subprocess.Popen(
+                    [
+                        str(fake_server),
+                        "--model",
+                        "/tmp/fake.gguf",
+                        "--port",
+                        "45567",
+                    ],
+                    stdout=sink,
+                    stderr=sink,
+                    env=env,
+                    start_new_session=True,
+                )
+            self._pids_to_cleanup.append(proc.pid)
+            time.sleep(0.3)
+
+            with mock.patch.object(process_manager, "LLAMA_SERVER", fake_server):
+                r = self.client.post("/api/instances/recover", headers=self._hdr())
+            with contextlib_suppress(Exception):
+                proc.terminate()
+            with contextlib_suppress(Exception):
+                proc.wait(timeout=2)
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        recovered = next(inst for inst in body["recovered"] if inst["id"] == "recoverme1234")
+        self.assertEqual(recovered["id"], "recoverme1234")
+        self.assertEqual(recovered["name"], "Recovered via API")
+        self.assertEqual(recovered["port"], 45567)
+        self.assertTrue(recovered["alive"])
+
     def test_instance_get_returns_file_backed_logs_when_inactive(self):
         log_file = REPO_ROOT / "tests" / "_tmp_route_instance.log"
         log_file.write_text("alpha\nbeta\n", encoding="utf-8")
@@ -450,6 +559,83 @@ class RouteTests(unittest.TestCase):
         finally:
             if log_file.exists():
                 log_file.unlink()
+
+    def test_memory_gpu_route_includes_system_and_processes(self):
+        manager = self.app.state.manager
+        manager._instances["gpuinst"] = process_manager.ManagedInstance(
+            record=state_mod.InstanceRecord(
+                id="gpuinst",
+                name="chat-prod",
+                status="running",
+                pid=4242,
+                host="127.0.0.1",
+                port=45540,
+            ),
+            log_buffer=LogBuffer(),
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_detect_gpu_runtime(*, managed_processes):
+            captured["managed_processes"] = managed_processes
+            return [
+                {
+                    "index": 0,
+                    "name": "RTX 4090",
+                    "uuid": "GPU-123",
+                    "total": 24 * 1024**3,
+                    "free": 8 * 1024**3,
+                    "used": 16 * 1024**3,
+                    "utilization_gpu": 81,
+                    "utilization_memory": 44,
+                    "memory_percent": 66.7,
+                    "processes": [
+                        {
+                            "pid": 4242,
+                            "process_name": "llama-server",
+                            "raw_process_name": "llama-server",
+                            "label": "chat-prod",
+                            "kind": "instance",
+                            "status": "running",
+                            "detail": "127.0.0.1:45540",
+                            "used_memory": 6 * 1024**3,
+                            "memory_percent": 25.0,
+                        }
+                    ],
+                }
+            ]
+
+        with mock.patch.object(memory_route.memory_utils, "detect_gpu_runtime", side_effect=fake_detect_gpu_runtime), \
+             mock.patch.object(
+                 memory_route.memory_utils,
+                 "detect_system_usage",
+                 return_value={
+                     "cpu_percent": 41.5,
+                     "cpu_count_logical": 32,
+                     "cpu_count_physical": 16,
+                     "load_1": 1.25,
+                     "load_5": 1.1,
+                     "load_15": 0.95,
+                     "memory_total": 64 * 1024**3,
+                     "memory_available": 20 * 1024**3,
+                     "memory_used": 44 * 1024**3,
+                     "memory_percent": 68.8,
+                     "cores": [{"index": 0, "percent": 52.0}],
+                 },
+             ):
+            r = self.client.get("/api/memory/gpus", headers=self._hdr())
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(4242, captured["managed_processes"])
+        self.assertEqual(captured["managed_processes"][4242]["label"], "chat-prod")
+
+        body = r.json()
+        self.assertEqual(body["system"]["cpu_percent"], 41.5)
+        self.assertEqual(body["system"]["memory_used_h"], "44.00 GB")
+        self.assertEqual(body["gpus"][0]["utilization_gpu"], 81)
+        self.assertEqual(body["gpus"][0]["used_h"], "16.00 GB")
+        self.assertEqual(body["gpus"][0]["processes"][0]["label"], "chat-prod")
+        self.assertEqual(body["gpus"][0]["processes"][0]["used_memory_h"], "6.00 GB")
 
     def test_instance_log_websocket_accepts_active_reattached_process(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)

@@ -18,16 +18,18 @@ export function Panel({
   padded = true,
 }: Props) {
   return (
-    <section
-      className={`brand-surface ${padded ? "p-5" : ""} ${className}`}
-    >
+    <section className={`brand-surface ${padded ? "p-5 sm:p-6" : ""} ${className}`}>
       {(title || subtitle || actions) && (
-        <header className="mb-4 flex items-start justify-between gap-4">
-          <div className="flex flex-col gap-1">
-            {title && <h2 className="brand-label">{title}</h2>}
-            {subtitle && <p className="text-sm text-bone-300">{subtitle}</p>}
+        <header className="mb-5 flex flex-col gap-3 border-b border-white/10 pb-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex min-w-0 flex-col gap-1">
+            {title && (
+              <h2 className="text-base font-semibold tracking-tight text-bone-50">
+                {title}
+              </h2>
+            )}
+            {subtitle && <p className="text-sm leading-6 text-bone-300">{subtitle}</p>}
           </div>
-          {actions && <div className="flex items-center gap-2">{actions}</div>}
+          {actions && <div className="flex min-w-0 w-full flex-wrap items-start gap-2 sm:w-auto sm:max-w-[36rem] sm:justify-end">{actions}</div>}
         </header>
       )}
       {children}

@@ -24,15 +24,24 @@ async def _probe_supported_flags() -> Dict[str, Any]:
     """Run ``autodevops.py --help`` once and parse the argparser output.
 
     Returns a dict with ``bool_flags`` (set), ``choice_flags`` (dict of
-    flag -> list of choices), and ``raw_help`` for debugging. Unknown flags
-    are treated as unsupported.
+    flag -> list of choices), ``value_flags`` (flags with a free-form value),
+    ``options`` (parsed metadata for the UI), and ``raw_help`` for debugging.
+    Unknown flags are treated as unsupported.
     """
     global _flag_cache
     if _flag_cache is not None:
         return _flag_cache
 
     if not AUTODEVOPS_SCRIPT.exists():
-        _flag_cache = {"bool_flags": [], "choice_flags": {}, "raw_help": ""}
+        _flag_cache = {
+            "bool_flags": [],
+            "choice_flags": {},
+            "value_flags": [],
+            "options": [],
+            "usage": "",
+            "summary": "",
+            "raw_help": "",
+        }
         return _flag_cache
 
     try:
@@ -48,12 +57,61 @@ async def _probe_supported_flags() -> Dict[str, Any]:
         _flag_cache = {
             "bool_flags": [],
             "choice_flags": {},
+            "value_flags": [],
+            "options": [],
+            "usage": "",
+            "summary": "",
             "raw_help": f"(probe failed: {exc})",
         }
         return _flag_cache
 
     bool_flags: List[str] = []
     choice_flags: Dict[str, List[str]] = {}
+    value_flags: List[str] = []
+    usage = ""
+    summary = ""
+    options: List[Dict[str, Any]] = []
+
+    lines = help_text.splitlines()
+    usage = next((line.strip() for line in lines if line.strip().startswith("usage:")), "")
+    preface: List[str] = []
+    for line in lines[1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped == "options:":
+            break
+        preface.append(stripped)
+    if preface:
+        summary = " ".join(preface)
+
+    current: Optional[Dict[str, Any]] = None
+    for line in lines:
+        option_match = re.match(r"^\s{2,}((?:-\w,\s*)?--[A-Za-z0-9\-]+(?:\s+(?:\{[^}]+\}|[A-Z_]+))?)\s{2,}(.*)$", line)
+        if option_match:
+            if current is not None:
+                options.append(current)
+            syntax = option_match.group(1).strip()
+            description = option_match.group(2).strip()
+            flag_match = re.search(r"(--[A-Za-z0-9\-]+)", syntax)
+            if flag_match is None:
+                current = None
+                continue
+            flag = flag_match.group(1)
+            choice_match = re.search(r"\{([^}]+)\}", syntax)
+            metavar_match = re.search(rf"{re.escape(flag)}\s+([A-Z_]+)", syntax)
+            current = {
+                "flag": flag,
+                "syntax": syntax,
+                "description": description,
+                "choices": [c.strip() for c in choice_match.group(1).split(",")] if choice_match else [],
+                "metavar": metavar_match.group(1) if metavar_match else None,
+            }
+            continue
+        if current is not None and re.match(r"^\s{20,}\S", line):
+            current["description"] = f'{current["description"]} {line.strip()}'.strip()
+    if current is not None:
+        options.append(current)
 
     # Bool flags: argparse rendering "  --fast-math" (no metavar).
     for match in re.finditer(r"(?m)^\s+(--[A-Za-z0-9\-]+)(?:$|,|\s{2,})", help_text):
@@ -78,10 +136,27 @@ async def _probe_supported_flags() -> Dict[str, Any]:
         flag = match.group(1)
         if flag in bool_flags:
             bool_flags.remove(flag)
+        if flag not in value_flags:
+            value_flags.append(flag)
+
+    for option in options:
+        if option["flag"] == "--help":
+            option["kind"] = "meta"
+            continue
+        if option["flag"] in choice_flags:
+            option["kind"] = "choice"
+        elif option["flag"] in value_flags:
+            option["kind"] = "value"
+        else:
+            option["kind"] = "bool"
 
     _flag_cache = {
         "bool_flags": bool_flags,
         "choice_flags": choice_flags,
+        "value_flags": [flag for flag in value_flags if flag != "--help"],
+        "options": [option for option in options if option["flag"] != "--help"],
+        "usage": usage,
+        "summary": summary,
         "raw_help": help_text,
     }
     return _flag_cache
@@ -147,6 +222,10 @@ async def supported_flags() -> Dict[str, Any]:
     return {
         "bool_flags": spec["bool_flags"],
         "choice_flags": spec["choice_flags"],
+        "value_flags": spec["value_flags"],
+        "options": spec["options"],
+        "usage": spec["usage"],
+        "summary": spec["summary"],
     }
 
 

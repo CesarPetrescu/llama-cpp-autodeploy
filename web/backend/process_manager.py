@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import signal
 import sys
 import time
@@ -28,6 +29,10 @@ LOG_TAIL_LINES_DEFAULT = 500
 FOLLOW_POLL_INTERVAL = 0.2
 INSTANCE_ACTIVE_STATUSES = {"running", "stopping"}
 BUILD_ACTIVE_STATUSES = {"running", "cancelling"}
+RECOVERY_MARKER_ENV = "LLAMA_AUTODEPLOY_MANAGED"
+RECOVERY_INSTANCE_ID_ENV = "LLAMA_AUTODEPLOY_INSTANCE_ID"
+RECOVERY_INSTANCE_NAME_ENV = "LLAMA_AUTODEPLOY_INSTANCE_NAME"
+RECOVERY_LOG_FILE_ENV = "LLAMA_AUTODEPLOY_LOG_FILE"
 
 
 # ---------------------------------------------------------------------------
@@ -235,13 +240,7 @@ def _pid_alive(pid: int) -> bool:
 def _cmdline_matches(pid: int, expected: List[str]) -> bool:
     if pid <= 0 or not expected:
         return False
-    try:
-        data = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except Exception:
-        return False
-    tokens = [t for t in data.split(b"\x00") if t]
-    decoded = [t.decode("utf-8", errors="replace") for t in tokens]
-    return decoded == list(expected)
+    return _read_proc_cmdline(pid) == list(expected)
 
 
 def _pgid_for_pid(pid: Optional[int]) -> Optional[int]:
@@ -264,6 +263,225 @@ def _safe_pgid_for_control(pid: Optional[int]) -> Optional[int]:
     if current_pgid is not None and pgid == current_pgid:
         return None
     return pgid
+
+
+def _read_proc_cmdline(pid: int) -> List[str]:
+    try:
+        data = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except Exception:
+        return []
+    tokens = [t for t in data.split(b"\x00") if t]
+    return [t.decode("utf-8", errors="replace") for t in tokens]
+
+
+def _read_proc_environ(pid: int) -> Dict[str, str]:
+    try:
+        data = Path(f"/proc/{pid}/environ").read_bytes()
+    except Exception:
+        return {}
+    env: Dict[str, str] = {}
+    for chunk in data.split(b"\x00"):
+        if not chunk or b"=" not in chunk:
+            continue
+        key, value = chunk.split(b"=", 1)
+        env[key.decode("utf-8", errors="replace")] = value.decode("utf-8", errors="replace")
+    return env
+
+
+def _read_proc_fd_target(pid: int, fd: int) -> Optional[str]:
+    try:
+        target = os.readlink(f"/proc/{pid}/fd/{fd}")
+    except OSError:
+        return None
+    if target.endswith(" (deleted)"):
+        target = target[:-10]
+    if not target.startswith("/"):
+        return None
+    return target
+
+
+def _path_points_to_repo_llama_server(raw_path: str) -> bool:
+    if not raw_path:
+        return False
+    candidates = [Path(raw_path)]
+    path_obj = Path(raw_path)
+    if not path_obj.is_absolute():
+        candidates.append(REPO_ROOT / path_obj)
+    repo_root = REPO_ROOT.resolve()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        if resolved.name != LLAMA_SERVER.name:
+            continue
+        if LLAMA_SERVER.exists():
+            with suppress(Exception):
+                if resolved == LLAMA_SERVER.resolve():
+                    return True
+        with suppress(ValueError):
+            resolved.relative_to(repo_root)
+            return True
+    return False
+
+
+def _find_llama_server_token_index(cmdline: List[str]) -> Optional[int]:
+    for idx, token in enumerate(cmdline):
+        if _path_points_to_repo_llama_server(token):
+            return idx
+        if Path(token).name == LLAMA_SERVER.name:
+            return idx
+    return None
+
+
+def _is_recoverable_llama_server(cmdline: List[str], env: Dict[str, str]) -> bool:
+    if not cmdline:
+        return False
+    if env.get(RECOVERY_MARKER_ENV) == "1":
+        return True
+    return _find_llama_server_token_index(cmdline) is not None
+
+
+def _parse_recovered_llama_config(cmdline: List[str], env: Dict[str, str]) -> Dict[str, Any]:
+    config: Dict[str, Any] = {}
+    extra: List[str] = []
+    start_index = _find_llama_server_token_index(cmdline)
+    i = (start_index + 1) if start_index is not None else 1
+    while i < len(cmdline):
+        tok = cmdline[i]
+        next_tok = cmdline[i + 1] if i + 1 < len(cmdline) else None
+
+        if tok == "--model" and next_tok is not None:
+            config["model_ref"] = next_tok
+            i += 2
+            continue
+        if tok == "--host" and next_tok is not None:
+            config["host"] = next_tok
+            i += 2
+            continue
+        if tok == "--port" and next_tok is not None:
+            parsed = _coerce_int(next_tok)
+            if parsed is not None:
+                config["port"] = parsed
+                i += 2
+                continue
+        if tok == "--n-gpu-layers" and next_tok is not None:
+            parsed = _coerce_int(next_tok)
+            if parsed is not None:
+                config["n_gpu_layers"] = parsed
+                i += 2
+                continue
+        if tok == "--ctx-size" and next_tok is not None:
+            parsed = _coerce_int(next_tok)
+            if parsed is not None:
+                config["ctx_size"] = parsed
+                i += 2
+                continue
+        if tok == "--n-cpu-moe" and next_tok is not None:
+            parsed = _coerce_int(next_tok)
+            if parsed is not None:
+                config["n_cpu_moe"] = parsed
+                i += 2
+                continue
+        if tok == "--mmproj" and next_tok is not None:
+            config["mmproj"] = next_tok
+            i += 2
+            continue
+        if tok == "--reasoning-format" and next_tok is not None:
+            config["reasoning_format"] = next_tok
+            i += 2
+            continue
+        if tok == "--tensor-split" and next_tok is not None:
+            config["tensor_split"] = next_tok
+            i += 2
+            continue
+        if tok == "--split-mode" and next_tok is not None:
+            config["split_mode"] = next_tok
+            i += 2
+            continue
+        if tok == "--embeddings":
+            config["mode"] = "embed"
+            i += 1
+            continue
+        if tok == "--cpu-moe":
+            config["cpu_moe"] = True
+            i += 1
+            continue
+        if tok == "--jinja":
+            config["jinja"] = True
+            i += 1
+            continue
+        if tok == "--no-context-shift":
+            config["no_context_shift"] = True
+            i += 1
+            continue
+
+        extra.append(tok)
+        i += 1
+
+    cuda_visible_devices = env.get("CUDA_VISIBLE_DEVICES")
+    if cuda_visible_devices is not None:
+        config["gpu_devices"] = cuda_visible_devices if cuda_visible_devices else "cpu"
+        if not cuda_visible_devices:
+            config["gpu_strategy"] = "cpu"
+    elif config.get("n_gpu_layers") == 0:
+        config["gpu_devices"] = "cpu"
+        config["gpu_strategy"] = "cpu"
+
+    config["extra_flags"] = shlex.join(extra)
+    return config
+
+
+def _merge_recovered_config(existing: Dict[str, Any], discovered: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(existing or {})
+    for key, value in discovered.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and value == "" and key != "extra_flags":
+            continue
+        if key == "extra_flags":
+            if value or not merged.get("extra_flags"):
+                merged[key] = value
+            continue
+        merged[key] = value
+
+    merged.setdefault("mode", "llm")
+    merged.setdefault("model_ref", "")
+    merged.setdefault("host", "127.0.0.1")
+    merged.setdefault("port", 45540)
+    merged.setdefault("cpu_moe", False)
+    merged.setdefault("jinja", False)
+    merged.setdefault("no_context_shift", False)
+    merged.setdefault("extra_flags", "")
+    return merged
+
+
+def _recover_log_file(pid: int, env: Dict[str, str]) -> Optional[str]:
+    hinted = (env.get(RECOVERY_LOG_FILE_ENV) or "").strip()
+    if hinted:
+        return hinted
+    for fd in (1, 2):
+        target = _read_proc_fd_target(pid, fd)
+        if target:
+            path = Path(target)
+            with suppress(OSError):
+                if path.exists() and path.is_file():
+                    return target
+            continue
+    return None
+
+
+def _derive_recovered_name(config: Dict[str, Any], env: Dict[str, str], port: Optional[int]) -> str:
+    hinted = (env.get(RECOVERY_INSTANCE_NAME_ENV) or "").strip()
+    if hinted:
+        return hinted
+    model_ref = str(config.get("model_ref") or "").strip()
+    mode = str(config.get("mode") or "llm").strip().lower() or "llm"
+    stem = Path(model_ref).stem if model_ref else mode
+    safe_stem = "-".join(part for part in stem.replace("_", "-").split() if part) or mode
+    if port:
+        return f"recovered-{safe_stem}-{port}"
+    return f"recovered-{safe_stem}"
 
 
 def _record_matches_process(pid: Optional[int], cmdline: List[str], pgid: Optional[int] = None) -> bool:
@@ -444,6 +662,7 @@ class ProcessManager:
             else:
                 self._mark_build_inactive(rec, "failure" if rec.status == "running" else "cancelled")
 
+        self._recover_orphan_instances()
         self._notify_instances()
         self._notify_builds()
 
@@ -557,6 +776,11 @@ class ProcessManager:
             if cuda_visible_devices is not None:
                 env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
                 inst.log_buffer.emit(f"[backend] CUDA_VISIBLE_DEVICES={cuda_visible_devices}")
+            env[RECOVERY_MARKER_ENV] = "1"
+            env[RECOVERY_INSTANCE_ID_ENV] = inst.record.id
+            env[RECOVERY_INSTANCE_NAME_ENV] = inst.record.name
+            if inst.record.log_file:
+                env[RECOVERY_LOG_FILE_ENV] = inst.record.log_file
             start_offset = _file_size(inst.log_buffer.log_file)
             try:
                 proc = await _spawn_logged_process(
@@ -608,6 +832,13 @@ class ProcessManager:
     async def restart_instance(self, instance_id: str) -> ManagedInstance:
         await self.stop_instance(instance_id)
         return await self.start_instance(instance_id)
+
+    async def recover_instances(self) -> List[ManagedInstance]:
+        async with self._lock:
+            recovered = self._recover_orphan_instances()
+        if recovered:
+            self._notify_instances()
+        return recovered
 
     async def delete_instance(self, instance_id: str) -> bool:
         inst = self._instances.get(instance_id)
@@ -753,6 +984,130 @@ class ProcessManager:
             build._watch_task = asyncio.create_task(self._wait_build_exit(build))
         else:
             build._watch_task = asyncio.create_task(self._poll_build_exit(build))
+
+    def _recover_orphan_instances(self) -> List[ManagedInstance]:
+        recovered: List[ManagedInstance] = []
+        live_pids = {
+            inst.record.pid
+            for inst in self._instances.values()
+            if inst.record.pid is not None and inst.is_alive()
+        }
+        for proc_dir in Path("/proc").iterdir():
+            if not proc_dir.name.isdigit():
+                continue
+            pid = int(proc_dir.name)
+            if pid == os.getpid() or pid in live_pids:
+                continue
+            cmdline = _read_proc_cmdline(pid)
+            if not cmdline:
+                continue
+            env = _read_proc_environ(pid)
+            if not _is_recoverable_llama_server(cmdline, env):
+                continue
+            inst = self._adopt_recovered_instance(pid=pid, cmdline=cmdline, env=env)
+            if inst is None:
+                continue
+            live_pids.add(pid)
+            recovered.append(inst)
+        return recovered
+
+    def _find_recovery_target(
+        self,
+        *,
+        pid: int,
+        cmdline: List[str],
+        recovered_id: Optional[str],
+        host: Optional[str],
+        port: Optional[int],
+        log_file: Optional[str],
+    ) -> Optional[ManagedInstance]:
+        if recovered_id:
+            inst = self._instances.get(recovered_id)
+            if inst is not None:
+                return inst
+
+        for inst in self._instances.values():
+            if inst.is_alive():
+                continue
+            rec = inst.record
+            if rec.pid == pid and rec.pid is not None:
+                return inst
+            if rec.cmdline and rec.cmdline == cmdline:
+                return inst
+            if log_file and rec.log_file and rec.log_file == log_file:
+                return inst
+            if port is not None and rec.port == port and rec.host == host:
+                return inst
+        return None
+
+    def _adopt_recovered_instance(
+        self,
+        *,
+        pid: int,
+        cmdline: List[str],
+        env: Dict[str, str],
+    ) -> Optional[ManagedInstance]:
+        if not _pid_alive(pid):
+            return None
+
+        discovered = _parse_recovered_llama_config(cmdline, env)
+        host = str(discovered.get("host") or "127.0.0.1")
+        port = _coerce_int(discovered.get("port")) or 45540
+        log_file = _recover_log_file(pid, env)
+        recovered_id = (env.get(RECOVERY_INSTANCE_ID_ENV) or "").strip() or None
+        target = self._find_recovery_target(
+            pid=pid,
+            cmdline=cmdline,
+            recovered_id=recovered_id,
+            host=host,
+            port=port,
+            log_file=log_file,
+        )
+
+        if target is not None:
+            previous = target.record
+            record = InstanceRecord(
+                id=previous.id,
+                name=previous.name or _derive_recovered_name(discovered, env, port),
+                kind=previous.kind or "llama-server",
+                config=_merge_recovered_config(previous.config, discovered),
+                pid=pid,
+                pgid=_pgid_for_pid(pid) or pid,
+                cmdline=list(cmdline),
+                started_at=previous.started_at or time.time(),
+                stopped_at=None,
+                last_exit=None,
+                status="running",
+                host=host,
+                port=port,
+                log_file=log_file or previous.log_file,
+                restart_policy=previous.restart_policy,
+            )
+        else:
+            instance_id = recovered_id if recovered_id and recovered_id not in self._instances else uuid.uuid4().hex[:12]
+            record = InstanceRecord(
+                id=instance_id,
+                name=_derive_recovered_name(discovered, env, port),
+                kind="llama-server",
+                config=_merge_recovered_config({}, discovered),
+                pid=pid,
+                pgid=_pgid_for_pid(pid) or pid,
+                cmdline=list(cmdline),
+                started_at=time.time(),
+                stopped_at=None,
+                last_exit=None,
+                status="running",
+                host=host,
+                port=port,
+                log_file=log_file,
+            )
+
+        inst = self._build_managed_instance(record)
+        inst.log_buffer.emit(f"[backend] recovered existing llama-server pid={pid}")
+        self._instances[record.id] = inst
+        self.store.upsert_instance(record)
+        self._attach_active_instance(inst, process=None, start_offset=_file_size(inst.log_buffer.log_file))
+        return inst
 
     async def _follow_log_file(self, buffer: LogBuffer, start_offset: int) -> None:
         log_file = buffer.log_file

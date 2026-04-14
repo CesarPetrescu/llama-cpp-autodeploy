@@ -1,11 +1,14 @@
 """Helpers for estimating llama.cpp memory usage for the TUI."""
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 try:
     from huggingface_hub import model_info  # type: ignore
@@ -86,6 +89,7 @@ _QUANT_PATTERNS: Tuple[Tuple[str, int], ...] = (
 
 
 _PARAM_RE = re.compile(r"(\d+(?:\.\d+)?)([bmk])", re.IGNORECASE)
+_CPU_SNAPSHOT: Optional[Dict[str, Tuple[int, int]]] = None
 
 
 def format_bytes(num_bytes: Optional[int]) -> str:
@@ -172,6 +176,286 @@ def _detect_system_memory() -> Tuple[Optional[int], Optional[int]]:
     total = meminfo.get("MemTotal")
     available = meminfo.get("MemAvailable") or meminfo.get("MemFree")
     return total, available
+
+
+def _read_proc_cpu_snapshot() -> Optional[Dict[str, Tuple[int, int]]]:
+    snapshot: Dict[str, Tuple[int, int]] = {}
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if not parts:
+                    continue
+                label = parts[0]
+                if not label.startswith("cpu"):
+                    continue
+                if label != "cpu" and not label[3:].isdigit():
+                    continue
+                try:
+                    values = [int(value) for value in parts[1:]]
+                except ValueError:
+                    continue
+                if len(values) < 4:
+                    continue
+                idle = values[3] + (values[4] if len(values) > 4 else 0)
+                total = sum(values)
+                snapshot[label] = (total, idle)
+    except FileNotFoundError:  # pragma: no cover - non-Linux fallback
+        return None
+    return snapshot or None
+
+
+_CPU_SNAPSHOT = _read_proc_cpu_snapshot()
+
+
+def _detect_cpu_usage() -> Tuple[Optional[float], List[Dict[str, Any]]]:
+    global _CPU_SNAPSHOT
+    current = _read_proc_cpu_snapshot()
+    if current:
+        previous = _CPU_SNAPSHOT
+        _CPU_SNAPSHOT = current
+        if previous:
+            def _pct(label: str) -> Optional[float]:
+                prev = previous.get(label)
+                cur = current.get(label)
+                if prev is None or cur is None:
+                    return None
+                total_delta = cur[0] - prev[0]
+                idle_delta = cur[1] - prev[1]
+                if total_delta <= 0:
+                    return None
+                used = max(total_delta - idle_delta, 0)
+                return round((used / total_delta) * 100.0, 1)
+
+            overall = _pct("cpu")
+            cores: List[Dict[str, Any]] = []
+            for label in sorted(
+                (name for name in current if name != "cpu"),
+                key=lambda name: int(name[3:]),
+            ):
+                percent = _pct(label)
+                cores.append({
+                    "index": int(label[3:]),
+                    "percent": percent,
+                })
+            return overall, cores
+
+    try:  # pragma: no cover - non-Linux fallback
+        import psutil  # type: ignore
+
+        per_cpu = [float(value) for value in psutil.cpu_percent(interval=None, percpu=True)]
+        overall = round(sum(per_cpu) / len(per_cpu), 1) if per_cpu else None
+        return overall, [{"index": idx, "percent": round(value, 1)} for idx, value in enumerate(per_cpu)]
+    except Exception:
+        return None, []
+
+
+def detect_system_usage() -> Dict[str, Any]:
+    cpu_percent, cores = _detect_cpu_usage()
+    memory_total, memory_available = _detect_system_memory()
+    memory_used = None
+    memory_percent = None
+    if memory_total is not None and memory_available is not None:
+        memory_used = max(memory_total - memory_available, 0)
+        if memory_total > 0:
+            memory_percent = round((memory_used / memory_total) * 100.0, 1)
+
+    cpu_count_logical = os.cpu_count()
+    cpu_count_physical = None
+    try:
+        import psutil  # type: ignore
+
+        cpu_count_logical = psutil.cpu_count(logical=True) or cpu_count_logical
+        cpu_count_physical = psutil.cpu_count(logical=False)
+    except Exception:
+        cpu_count_physical = None
+
+    try:
+        load_1, load_5, load_15 = os.getloadavg()
+    except Exception:  # pragma: no cover - non-POSIX fallback
+        load_1, load_5, load_15 = None, None, None
+
+    return {
+        "cpu_percent": cpu_percent,
+        "cpu_count_logical": cpu_count_logical,
+        "cpu_count_physical": cpu_count_physical,
+        "load_1": load_1,
+        "load_5": load_5,
+        "load_15": load_15,
+        "memory_total": memory_total,
+        "memory_available": memory_available,
+        "memory_used": memory_used,
+        "memory_percent": memory_percent,
+        "cores": cores,
+    }
+
+
+def _parse_nvidia_smi_int(value: str) -> Optional[int]:
+    cleaned = value.strip()
+    if not cleaned or cleaned in {"-", "N/A", "[N/A]", "Not Supported", "[Not Supported]"}:
+        return None
+    try:
+        return int(float(cleaned))
+    except ValueError:
+        return None
+
+
+def _run_nvidia_smi_query(query: str, fields: List[str]) -> List[str]:
+    if shutil.which("nvidia-smi") is None:
+        return []
+    cmd = [
+        "nvidia-smi",
+        f"--query-{query}={','.join(fields)}",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=2.0,
+            check=True,
+        )
+    except Exception:
+        return []
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    if len(lines) == 1 and "No running compute processes found" in lines[0]:
+        return []
+    return lines
+
+
+def _read_process_display_name(pid: int, fallback: str) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        if raw:
+            first = raw.split(b"\0", 1)[0].decode("utf-8", errors="replace").strip()
+            if first:
+                return Path(first).name
+    except Exception:
+        pass
+    cleaned = fallback.strip()
+    if not cleaned:
+        return f"pid {pid}"
+    return Path(cleaned).name or cleaned
+
+
+def detect_gpu_runtime(managed_processes: Optional[Dict[int, Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    managed_processes = managed_processes or {}
+    gpu_stats_lines = _run_nvidia_smi_query(
+        "gpu",
+        [
+            "index",
+            "uuid",
+            "name",
+            "utilization.gpu",
+            "utilization.memory",
+            "memory.used",
+            "memory.free",
+            "memory.total",
+        ],
+    )
+    stats_by_index: Dict[int, Dict[str, Any]] = {}
+    uuid_to_index: Dict[str, int] = {}
+    for line in gpu_stats_lines:
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) < 8:
+            continue
+        index = _parse_nvidia_smi_int(parts[0])
+        if index is None:
+            continue
+        uuid = parts[1]
+        stats_by_index[index] = {
+            "index": index,
+            "uuid": uuid,
+            "name": parts[2],
+            "utilization_gpu": _parse_nvidia_smi_int(parts[3]),
+            "utilization_memory": _parse_nvidia_smi_int(parts[4]),
+            "used": None if _parse_nvidia_smi_int(parts[5]) is None else _parse_nvidia_smi_int(parts[5]) * 1024 * 1024,
+            "free": None if _parse_nvidia_smi_int(parts[6]) is None else _parse_nvidia_smi_int(parts[6]) * 1024 * 1024,
+            "total": None if _parse_nvidia_smi_int(parts[7]) is None else _parse_nvidia_smi_int(parts[7]) * 1024 * 1024,
+            "processes": [],
+        }
+        uuid_to_index[uuid] = index
+
+    gpu_infos = detect_gpus()
+    runtime_by_index: Dict[int, Dict[str, Any]] = {}
+    for gpu in gpu_infos:
+        runtime_by_index[gpu.index] = {
+            "index": gpu.index,
+            "uuid": None,
+            "name": gpu.name,
+            "total": gpu.total,
+            "free": gpu.free,
+            "used": None if gpu.total is None or gpu.free is None else max(gpu.total - gpu.free, 0),
+            "utilization_gpu": None,
+            "utilization_memory": None,
+            "processes": [],
+        }
+
+    for index, stats in stats_by_index.items():
+        current = runtime_by_index.get(index)
+        if current is None:
+            runtime_by_index[index] = dict(stats)
+            continue
+        current.update({
+            "uuid": stats.get("uuid"),
+            "name": stats.get("name") or current.get("name"),
+            "total": stats.get("total") if stats.get("total") is not None else current.get("total"),
+            "free": stats.get("free") if stats.get("free") is not None else current.get("free"),
+            "used": stats.get("used") if stats.get("used") is not None else current.get("used"),
+            "utilization_gpu": stats.get("utilization_gpu"),
+            "utilization_memory": stats.get("utilization_memory"),
+        })
+
+    process_lines = _run_nvidia_smi_query(
+        "compute-apps",
+        ["gpu_uuid", "pid", "process_name", "used_gpu_memory"],
+    )
+    for line in process_lines:
+        parts = [part.strip() for part in line.split(",", 3)]
+        if len(parts) < 4:
+            continue
+        gpu_uuid = parts[0]
+        gpu_index = uuid_to_index.get(gpu_uuid)
+        if gpu_index is None:
+            continue
+        pid = _parse_nvidia_smi_int(parts[1])
+        if pid is None:
+            continue
+        raw_name = parts[2]
+        used_memory_mb = _parse_nvidia_smi_int(parts[3])
+        used_memory = None if used_memory_mb is None else used_memory_mb * 1024 * 1024
+        gpu_total = runtime_by_index.get(gpu_index, {}).get("total")
+        extra = managed_processes.get(pid, {})
+        process_name = _read_process_display_name(pid, raw_name)
+        runtime_by_index[gpu_index]["processes"].append({
+            "pid": pid,
+            "process_name": process_name,
+            "raw_process_name": raw_name,
+            "label": extra.get("label"),
+            "kind": extra.get("kind"),
+            "status": extra.get("status"),
+            "detail": extra.get("detail"),
+            "used_memory": used_memory,
+            "memory_percent": round((used_memory / gpu_total) * 100.0, 1)
+            if used_memory is not None and gpu_total not in (None, 0)
+            else None,
+        })
+
+    out: List[Dict[str, Any]] = []
+    for index in sorted(runtime_by_index):
+        gpu = runtime_by_index[index]
+        if gpu.get("used") is None and gpu.get("total") is not None and gpu.get("free") is not None:
+            gpu["used"] = max(gpu["total"] - gpu["free"], 0)
+        gpu["memory_percent"] = round((gpu["used"] / gpu["total"]) * 100.0, 1) if gpu.get("used") is not None and gpu.get("total") not in (None, 0) else None
+        gpu["processes"] = sorted(
+            gpu.get("processes", []),
+            key=lambda proc: (proc.get("used_memory") or 0),
+            reverse=True,
+        )
+        out.append(gpu)
+    return out
 
 
 def detect_gpus() -> List[GPUInfo]:

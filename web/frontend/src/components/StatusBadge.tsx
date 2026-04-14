@@ -14,13 +14,13 @@ const COLORS: Record<string, string> = {
 };
 
 export function StatusBadge({ status }: { status: string }) {
-  const klass = COLORS[status] || "bg-white/5 text-bone-200 ring-white/10";
+  const klass = COLORS[status] || "bg-ink-200/80 text-bone-200 ring-white/10";
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider ring-1 ${klass}`}
+      className={`inline-flex items-center gap-1.5 rounded-none px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wider ring-1 ${klass}`}
     >
       <span
-        className={`h-1.5 w-1.5 rounded-full ${
+        className={`h-1.5 w-1.5 rounded-none ${
           status === "running" || status === "success"
             ? "bg-lime-300"
             : status === "crashed" || status === "failure"
