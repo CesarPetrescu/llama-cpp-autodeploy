@@ -89,7 +89,7 @@ export default function Library() {
             onChange={(e) => setToken(e.target.value)}
             placeholder="hf_token (optional)"
             type="password"
-            className="brand-input w-60"
+            className="brand-input w-full md:w-60"
           />
           <button
             type="submit"

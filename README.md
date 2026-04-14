@@ -253,6 +253,24 @@ build history, and streamed build logs.
   <img src="docs/screenshots/web-builds.png" alt="Builds page" width="100%" />
 </p>
 
+#### Mobile Dashboard
+
+Same overview on a narrow viewport, with the shell, stats, and disclosures
+compressed for phone-sized screens.
+
+<p align="center">
+  <img src="docs/screenshots/web-dashboard-mobile.png" alt="Dashboard on mobile" width="42%" />
+</p>
+
+#### Mobile Builds
+
+Build history and command controls rendered for a narrow viewport without the
+header and usage blocks taking over the screen.
+
+<p align="center">
+  <img src="docs/screenshots/web-builds-mobile.png" alt="Builds on mobile" width="42%" />
+</p>
+
 Refresh the screenshots:
 
 ```bash

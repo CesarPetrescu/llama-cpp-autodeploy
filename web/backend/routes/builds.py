@@ -75,13 +75,23 @@ async def _probe_supported_flags() -> Dict[str, Any]:
     lines = help_text.splitlines()
     usage = next((line.strip() for line in lines if line.strip().startswith("usage:")), "")
     preface: List[str] = []
-    for line in lines[1:]:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped == "options:":
-            break
-        preface.append(stripped)
+    usage_index = next(
+        (idx for idx, line in enumerate(lines) if line.strip().startswith("usage:")),
+        None,
+    )
+    if usage_index is not None:
+        idx = usage_index + 1
+        # argparse may wrap long usage lines; skip that whole paragraph first.
+        while idx < len(lines) and lines[idx].strip():
+            idx += 1
+        while idx < len(lines) and not lines[idx].strip():
+            idx += 1
+        while idx < len(lines):
+            stripped = lines[idx].strip()
+            if not stripped or stripped == "options:":
+                break
+            preface.append(stripped)
+            idx += 1
     if preface:
         summary = " ".join(preface)
 

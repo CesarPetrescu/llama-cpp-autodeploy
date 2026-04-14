@@ -202,6 +202,21 @@ function findOptionSpec(flags: SupportedFlags | undefined, flag: string) {
   return options.find((option) => option.flag === flag);
 }
 
+function buildHeaderSummary(flags: SupportedFlags | undefined): string {
+  const summary = flags?.summary?.replace(/\s+/g, " ").trim();
+  if (!summary) return FALLBACK_SUMMARY;
+  if (!/^usage:/i.test(summary) && !/^(\[--|\{--|--)/.test(summary)) return summary;
+
+  const automatedIndex = summary.indexOf("Automated");
+  if (automatedIndex >= 0) {
+    return summary.slice(automatedIndex).trim();
+  }
+
+  const sentenceMatch = summary.match(/([A-Z][^.]*\.)/);
+  if (sentenceMatch) return sentenceMatch[1];
+  return FALLBACK_SUMMARY;
+}
+
 export default function Builds() {
   const qc = useQueryClient();
   const [form, setForm] = useState<BuildFormState>(DEFAULT_FORM);
@@ -346,17 +361,10 @@ export default function Builds() {
       <PageHeader
         eyebrow="Toolchain"
         title="Builds"
-        description={flags.data?.summary || FALLBACK_SUMMARY}
-        actions={
-          (flags.data?.usage || FALLBACK_USAGE) ? (
-            <div className="brand-code-block text-left sm:max-w-[40rem]">
-              {flags.data?.usage || FALLBACK_USAGE}
-            </div>
-          ) : undefined
-        }
+        description={buildHeaderSummary(flags.data)}
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
         <BuildStat
           label="History"
           value={`${buildList.length}`}
@@ -393,15 +401,14 @@ export default function Builds() {
         />
       </div>
 
+      <Panel title="Usage">
+        <div className="brand-code-block brand-scroll-pane max-h-[8rem] text-left">
+          {flags.data?.usage || FALLBACK_USAGE}
+        </div>
+      </Panel>
+
       <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
-        <Panel
-          title="Build configuration"
-          actions={
-            <div className="brand-code-block text-left sm:max-w-[36rem]">
-              {buildCommandPreview(form)}
-            </div>
-          }
-        >
+        <Panel title="Build configuration">
           {flags.isLoading && (
             <div className="text-sm text-bone-400">Probing autodevops.py --help…</div>
           )}
@@ -503,7 +510,7 @@ export default function Builds() {
 
             <div className="border border-white/10 bg-ink-400/72 p-4">
               <div className="brand-label">Command preview</div>
-              <div className="mt-2 font-mono text-[12px] text-bone-100 break-all">
+              <div className="brand-code-block brand-scroll-pane mt-2 max-h-[8rem]">
                 {buildCommandPreview(form)}
               </div>
             </div>

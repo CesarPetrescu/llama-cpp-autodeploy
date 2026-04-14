@@ -110,9 +110,9 @@ function ShellStat({
         ? "text-amber-200"
         : "text-bone-50";
   return (
-    <div className="rounded-none border border-white/10 bg-ink-300/72 px-3 py-2.5">
+    <div className="rounded-none border border-white/10 bg-ink-300/72 px-3 py-2">
       <div className="brand-label">{label}</div>
-      <div className={`mt-2 text-xl font-semibold tracking-tight ${toneClass}`}>
+      <div className={`mt-1.5 text-lg font-semibold tracking-tight sm:text-xl ${toneClass}`}>
         {value}
       </div>
     </div>
@@ -255,7 +255,7 @@ export default function App() {
                 }`}
               />
             </div>
-            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+            <div className="mt-4 grid gap-2 grid-cols-2 lg:grid-cols-1">
               <ShellStat
                 label="Running instances"
                 value={`${feeds.instances.running}`}
@@ -329,13 +329,13 @@ export default function App() {
         </aside>
 
         <div className="min-w-0">
-          <header className="sticky top-0 z-30 border-b border-white/10 bg-ink-600/88 px-4 py-3 backdrop-blur lg:hidden">
+          <header className="sticky top-0 z-30 border-b border-white/10 bg-ink-600/88 px-3 py-3 backdrop-blur lg:hidden">
             <div className="flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
                 <button
                   type="button"
                   onClick={() => setNavOpen(true)}
-                  className="brand-btn-ghost px-3 py-2"
+                  className="brand-btn-ghost shrink-0 px-3 py-2"
                 >
                   Menu
                 </button>
@@ -347,7 +347,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 rounded-none border border-white/10 bg-ink-300/80 px-3 py-1.5 text-xs font-semibold">
+              <div className="hidden items-center gap-2 rounded-none border border-white/10 bg-ink-300/80 px-3 py-1.5 text-xs font-semibold sm:flex">
                 <span
                   className={`h-2 w-2 rounded-none ${
                     feeds.connected ? "bg-lime-300" : "bg-rose-400"
@@ -360,7 +360,7 @@ export default function App() {
 
           <main
             id="main-content"
-            className="relative px-4 py-4 sm:px-6 sm:py-6 lg:px-10 lg:py-8"
+            className="relative px-3 py-3 sm:px-6 sm:py-6 lg:px-10 lg:py-8"
           >
             <div className="mx-auto w-full max-w-7xl">
               <Routes>

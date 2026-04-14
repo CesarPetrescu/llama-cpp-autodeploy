@@ -239,7 +239,7 @@ export default function Dashboard() {
         }
       />
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      <div className="grid gap-4 grid-cols-2 xl:grid-cols-6">
         <MetricCard
           label="Backend"
           value={health.data?.status === "ok" ? "ok" : health.isError ? "down" : "check"}

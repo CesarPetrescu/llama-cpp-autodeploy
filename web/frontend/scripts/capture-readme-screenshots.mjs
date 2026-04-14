@@ -20,9 +20,12 @@ async function openApp(page) {
   });
 }
 
-async function navigateViaUi(page, routeLabel) {
+async function navigateViaUi(page, routeLabel, mobile = false) {
   if (routeLabel === "Overview") {
     return;
+  }
+  if (mobile) {
+    await page.getByRole("button", { name: "Menu", exact: true }).click();
   }
   await page.getByRole("link", { name: new RegExp(routeLabel, "i") }).first().click();
   await page.getByRole("heading", { name: routeLabel, exact: true }).waitFor({
@@ -31,9 +34,9 @@ async function navigateViaUi(page, routeLabel) {
   });
 }
 
-async function captureViewport(page, routeLabel, outputName) {
+async function captureViewport(page, routeLabel, outputName, mobile = false) {
   await openApp(page);
-  await navigateViaUi(page, routeLabel);
+  await navigateViaUi(page, routeLabel, mobile);
   await page.waitForTimeout(800);
   await page.screenshot({
     path: path.join(outputDir, outputName),
@@ -78,13 +81,34 @@ async function main() {
   );
 
   const page = await context.newPage();
+  const mobileContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+  });
+
+  await mobileContext.addInitScript(
+    ({ currentToken, currentApiBase }) => {
+      if (currentToken) {
+        window.localStorage.setItem("llama_web_token", currentToken);
+      }
+      window.localStorage.setItem("llama_web_base", currentApiBase ?? "");
+    },
+    { currentToken: token, currentApiBase: apiBase },
+  );
+
+  const mobilePage = await mobileContext.newPage();
 
   try {
     await captureViewport(page, "Overview", "web-dashboard-overview.png");
     await captureGpuPanel(page, "web-dashboard-gpu.png");
     await captureViewport(page, "Instances", "web-instances.png");
     await captureViewport(page, "Builds", "web-builds.png");
+    await captureViewport(mobilePage, "Overview", "web-dashboard-mobile.png", true);
+    await captureViewport(mobilePage, "Builds", "web-builds-mobile.png", true);
   } finally {
+    await mobileContext.close();
     await browser.close();
   }
 

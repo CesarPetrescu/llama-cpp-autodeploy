@@ -112,7 +112,7 @@ h4 {
     @apply w-full rounded-none border border-white/10 bg-ink-400/80 px-3.5 py-2.5 text-sm text-bone-50 placeholder:text-bone-500 focus:border-lime-300 focus:outline-none focus:ring-2 focus:ring-lime-300/30;
   }
   .brand-btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-none px-4 py-2.5 text-sm font-semibold active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-2 rounded-none px-3 py-2 text-sm font-semibold active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 sm:px-4 sm:py-2.5;
   }
   .brand-btn-primary {
     @apply brand-btn bg-lime-300 text-ink-900 hover:bg-lime-200 shadow-glow-lime;
@@ -127,7 +127,7 @@ h4 {
     @apply brand-btn border border-amber-400/40 bg-amber-400/10 text-amber-200 hover:bg-amber-400/20;
   }
   .brand-stat {
-    @apply brand-surface flex min-h-[8.75rem] flex-col justify-between p-5;
+    @apply brand-surface flex min-h-[6.6rem] flex-col justify-between p-3.5 sm:min-h-[8.75rem] sm:p-5;
   }
   .brand-table-wrap {
     @apply overflow-x-auto rounded-none border border-white/10 bg-ink-500/60;

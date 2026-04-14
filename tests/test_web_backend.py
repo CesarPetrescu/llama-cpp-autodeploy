@@ -426,6 +426,29 @@ class BuildFlagTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(option_map["--ref"]["kind"], "value")
         self.assertIn("git tag/branch/commit", option_map["--ref"]["description"])
 
+    async def test_probe_skips_wrapped_usage_when_building_summary(self):
+        help_text = """usage: autodevops.py [-h] [--now] [--ref REF]
+                     [--force-mmq {auto,on,off}]
+
+Automated llama.cpp build (CUDA + BLAS).
+
+options:
+  -h, --help            show this help message and exit
+"""
+
+        async def fake_exec(*args, **kwargs):
+            class FakeProc:
+                async def communicate(self):
+                    return help_text.encode("utf-8"), b""
+
+            return FakeProc()
+
+        with mock.patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            spec = await builds_route._probe_supported_flags()
+
+        self.assertEqual(spec["usage"], "usage: autodevops.py [-h] [--now] [--ref REF]")
+        self.assertEqual(spec["summary"], "Automated llama.cpp build (CUDA + BLAS).")
+
     async def test_validate_rejects_unknown_choice(self):
         req = builds_route.BuildRequest(blas="bogus")
         from fastapi import HTTPException

@@ -423,7 +423,7 @@ export default function Instances() {
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Managed" value={`${instances.length}`} hint="Persisted control-plane records" />
         <SummaryCard
           label="Running"
