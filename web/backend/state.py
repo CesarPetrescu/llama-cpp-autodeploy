@@ -1,4 +1,4 @@
-"""Persistent instance/build registry backed by ``.web_state.json``."""
+"""Persistent instance/build/benchmark registry backed by ``.web_state.json``."""
 from __future__ import annotations
 
 import json
@@ -42,21 +42,44 @@ class BuildRecord:
 
 
 @dataclass
+class BenchmarkRecord:
+    id: str
+    name: str = ""
+    config: Dict[str, Any] = field(default_factory=dict)
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    status: str = "pending"  # pending | running | cancelling | cancelled | success | failure
+    log_file: Optional[str] = None
+    result_file: Optional[str] = None
+    pid: Optional[int] = None
+    pgid: Optional[int] = None
+    cmdline: List[str] = field(default_factory=list)
+    resolved_model: Optional[str] = None
+    result_rows: List[Dict[str, Any]] = field(default_factory=list)
+    summary: Dict[str, Any] = field(default_factory=dict)
+    parse_error: Optional[str] = None
+
+
+@dataclass
 class PersistentState:
     instances: List[InstanceRecord] = field(default_factory=list)
     builds: List[BuildRecord] = field(default_factory=list)
+    benchmarks: List[BenchmarkRecord] = field(default_factory=list)
 
     def to_json(self) -> Dict[str, Any]:
         return {
             "instances": [asdict(r) for r in self.instances],
             "builds": [asdict(r) for r in self.builds],
+            "benchmarks": [asdict(r) for r in self.benchmarks],
         }
 
     @classmethod
     def from_json(cls, data: Dict[str, Any]) -> "PersistentState":
         instances = [InstanceRecord(**r) for r in data.get("instances", [])]
         builds = [BuildRecord(**r) for r in data.get("builds", [])]
-        return cls(instances=instances, builds=builds)
+        benchmarks = [BenchmarkRecord(**r) for r in data.get("benchmarks", [])]
+        return cls(instances=instances, builds=builds, benchmarks=benchmarks)
 
 
 class StateStore:
@@ -138,4 +161,27 @@ class StateStore:
                     break
             else:
                 self._state.builds.append(record)
+            self._save_locked()
+
+    # ---- benchmarks ----
+
+    def list_benchmarks(self) -> List[BenchmarkRecord]:
+        with self._lock:
+            return list(self._state.benchmarks)
+
+    def get_benchmark(self, benchmark_id: str) -> Optional[BenchmarkRecord]:
+        with self._lock:
+            for rec in self._state.benchmarks:
+                if rec.id == benchmark_id:
+                    return rec
+        return None
+
+    def upsert_benchmark(self, record: BenchmarkRecord) -> None:
+        with self._lock:
+            for idx, rec in enumerate(self._state.benchmarks):
+                if rec.id == record.id:
+                    self._state.benchmarks[idx] = record
+                    break
+            else:
+                self._state.benchmarks.append(record)
             self._save_locked()

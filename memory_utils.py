@@ -24,6 +24,8 @@ class GPUInfo:
     name: str
     total: Optional[int]
     free: Optional[int]
+    uuid: Optional[str] = None
+    system_index: Optional[int] = None
 
 
 @dataclass
@@ -300,6 +302,22 @@ def _parse_nvidia_smi_int(value: str) -> Optional[int]:
         return None
 
 
+def _normalize_gpu_uuid(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.startswith("GPU-"):
+        text = text[4:]
+    return text or None
+
+
+def _display_gpu_uuid(value: Any) -> Optional[str]:
+    normalized = _normalize_gpu_uuid(value)
+    if not normalized:
+        return None
+    return f"GPU-{normalized}"
+
+
 def _run_nvidia_smi_query(query: str, fields: List[str]) -> List[str]:
     if shutil.which("nvidia-smi") is None:
         return []
@@ -355,19 +373,19 @@ def detect_gpu_runtime(managed_processes: Optional[Dict[int, Dict[str, Any]]] = 
             "memory.total",
         ],
     )
-    stats_by_index: Dict[int, Dict[str, Any]] = {}
-    uuid_to_index: Dict[str, int] = {}
+    stats_by_key: Dict[str, Dict[str, Any]] = {}
     for line in gpu_stats_lines:
         parts = [part.strip() for part in line.split(",")]
         if len(parts) < 8:
             continue
-        index = _parse_nvidia_smi_int(parts[0])
-        if index is None:
+        system_index = _parse_nvidia_smi_int(parts[0])
+        if system_index is None:
             continue
-        uuid = parts[1]
-        stats_by_index[index] = {
-            "index": index,
-            "uuid": uuid,
+        uuid_key = _normalize_gpu_uuid(parts[1]) or f"system-index-{system_index}"
+        stats_by_key[uuid_key] = {
+            "index": system_index,
+            "system_index": system_index,
+            "uuid": _display_gpu_uuid(parts[1]),
             "name": parts[2],
             "utilization_gpu": _parse_nvidia_smi_int(parts[3]),
             "utilization_memory": _parse_nvidia_smi_int(parts[4]),
@@ -376,14 +394,15 @@ def detect_gpu_runtime(managed_processes: Optional[Dict[int, Dict[str, Any]]] = 
             "total": None if _parse_nvidia_smi_int(parts[7]) is None else _parse_nvidia_smi_int(parts[7]) * 1024 * 1024,
             "processes": [],
         }
-        uuid_to_index[uuid] = index
 
     gpu_infos = detect_gpus()
-    runtime_by_index: Dict[int, Dict[str, Any]] = {}
+    runtime_by_key: Dict[str, Dict[str, Any]] = {}
     for gpu in gpu_infos:
-        runtime_by_index[gpu.index] = {
+        key = _normalize_gpu_uuid(gpu.uuid) or f"cuda-index-{gpu.index}"
+        runtime_by_key[key] = {
             "index": gpu.index,
-            "uuid": None,
+            "system_index": gpu.system_index,
+            "uuid": _display_gpu_uuid(gpu.uuid),
             "name": gpu.name,
             "total": gpu.total,
             "free": gpu.free,
@@ -393,13 +412,14 @@ def detect_gpu_runtime(managed_processes: Optional[Dict[int, Dict[str, Any]]] = 
             "processes": [],
         }
 
-    for index, stats in stats_by_index.items():
-        current = runtime_by_index.get(index)
+    for key, stats in stats_by_key.items():
+        current = runtime_by_key.get(key)
         if current is None:
-            runtime_by_index[index] = dict(stats)
+            runtime_by_key[key] = dict(stats)
             continue
         current.update({
             "uuid": stats.get("uuid"),
+            "system_index": stats.get("system_index"),
             "name": stats.get("name") or current.get("name"),
             "total": stats.get("total") if stats.get("total") is not None else current.get("total"),
             "free": stats.get("free") if stats.get("free") is not None else current.get("free"),
@@ -416,9 +436,11 @@ def detect_gpu_runtime(managed_processes: Optional[Dict[int, Dict[str, Any]]] = 
         parts = [part.strip() for part in line.split(",", 3)]
         if len(parts) < 4:
             continue
-        gpu_uuid = parts[0]
-        gpu_index = uuid_to_index.get(gpu_uuid)
-        if gpu_index is None:
+        key = _normalize_gpu_uuid(parts[0])
+        if key is None:
+            continue
+        gpu_entry = runtime_by_key.get(key)
+        if gpu_entry is None:
             continue
         pid = _parse_nvidia_smi_int(parts[1])
         if pid is None:
@@ -426,10 +448,10 @@ def detect_gpu_runtime(managed_processes: Optional[Dict[int, Dict[str, Any]]] = 
         raw_name = parts[2]
         used_memory_mb = _parse_nvidia_smi_int(parts[3])
         used_memory = None if used_memory_mb is None else used_memory_mb * 1024 * 1024
-        gpu_total = runtime_by_index.get(gpu_index, {}).get("total")
+        gpu_total = gpu_entry.get("total")
         extra = managed_processes.get(pid, {})
         process_name = _read_process_display_name(pid, raw_name)
-        runtime_by_index[gpu_index]["processes"].append({
+        gpu_entry["processes"].append({
             "pid": pid,
             "process_name": process_name,
             "raw_process_name": raw_name,
@@ -444,8 +466,15 @@ def detect_gpu_runtime(managed_processes: Optional[Dict[int, Dict[str, Any]]] = 
         })
 
     out: List[Dict[str, Any]] = []
-    for index in sorted(runtime_by_index):
-        gpu = runtime_by_index[index]
+    def _sort_key(gpu: Dict[str, Any]) -> tuple[int, int]:
+        cuda_index = gpu.get("index")
+        system_index = gpu.get("system_index")
+        return (
+            int(cuda_index) if isinstance(cuda_index, int) else 10_000,
+            int(system_index) if isinstance(system_index, int) else 10_000,
+        )
+
+    for gpu in sorted(runtime_by_key.values(), key=_sort_key):
         if gpu.get("used") is None and gpu.get("total") is not None and gpu.get("free") is not None:
             gpu["used"] = max(gpu["total"] - gpu["free"], 0)
         gpu["memory_percent"] = round((gpu["used"] / gpu["total"]) * 100.0, 1) if gpu.get("used") is not None and gpu.get("total") not in (None, 0) else None
@@ -476,9 +505,11 @@ def detect_gpus() -> List[GPUInfo]:
                 props = torch.cuda.get_device_properties(idx)
                 name = props.name
                 total = getattr(props, "total_memory", None)
+                uuid = _normalize_gpu_uuid(getattr(props, "uuid", None))
             except Exception:
                 name = f"CUDA {idx}"
                 total = None
+                uuid = None
             free = None
             try:
                 torch.cuda.set_device(idx)
@@ -487,7 +518,15 @@ def detect_gpus() -> List[GPUInfo]:
                     total = int(total_runtime)
             except Exception:
                 free = None
-            infos.append(GPUInfo(index=idx, name=name, total=None if total is None else int(total), free=None if free is None else int(free)))
+            infos.append(
+                GPUInfo(
+                    index=idx,
+                    name=name,
+                    total=None if total is None else int(total),
+                    free=None if free is None else int(free),
+                    uuid=uuid,
+                )
+            )
         if prev_device is not None:
             try:
                 torch.cuda.set_device(prev_device)

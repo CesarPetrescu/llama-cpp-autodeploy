@@ -12,6 +12,7 @@ import InstanceLogs from "./pages/InstanceLogs";
 import Library from "./pages/Library";
 import Memory from "./pages/Memory";
 import Builds from "./pages/Builds";
+import Benchmarks from "./pages/Benchmarks";
 import Settings from "./pages/Settings";
 import { usePrefetch } from "./hooks/usePrefetch";
 import { useLiveFeeds } from "./hooks/useLiveFeeds";
@@ -22,6 +23,7 @@ type NavIconName =
   | "memory"
   | "library"
   | "builds"
+  | "benchmarks"
   | "settings";
 
 interface NavItem {
@@ -77,6 +79,12 @@ function NavIcon({ name, active }: { name: NavIconName; active?: boolean }) {
       return (
         <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden>
           <path {...common} d="M14 6 8 12l6 6M10 6l6 6-6 6" />
+        </svg>
+      );
+    case "benchmarks":
+      return (
+        <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden>
+          <path {...common} d="M5 18V9M12 18V5M19 18v-7M3 18h18" />
         </svg>
       );
     case "settings":
@@ -165,6 +173,14 @@ export default function App() {
       description: "toolchain and logs",
       icon: "builds",
       badge: feeds.builds.running > 0 ? `${feeds.builds.running}` : undefined,
+      badgeClass: "bg-amber-400/80 text-ink-900",
+    },
+    {
+      to: "/benchmarks",
+      label: "Benchmarks",
+      description: "llama-bench runs and results",
+      icon: "benchmarks",
+      badge: feeds.benchmarks.running > 0 ? `${feeds.benchmarks.running}` : undefined,
       badgeClass: "bg-amber-400/80 text-ink-900",
     },
     {
@@ -265,6 +281,11 @@ export default function App() {
                 label="Active builds"
                 value={`${feeds.builds.running}`}
                 tone={feeds.builds.running > 0 ? "warning" : "default"}
+              />
+              <ShellStat
+                label="Bench runs"
+                value={`${feeds.benchmarks.running}`}
+                tone={feeds.benchmarks.running > 0 ? "warning" : "default"}
               />
             </div>
           </div>
@@ -371,6 +392,7 @@ export default function App() {
                 <Route path="/memory" element={<Memory />} />
                 <Route path="/library" element={<Library />} />
                 <Route path="/builds" element={<Builds />} />
+                <Route path="/benchmarks" element={<Benchmarks />} />
                 <Route path="/settings" element={<Settings />} />
               </Routes>
             </div>

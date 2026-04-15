@@ -70,6 +70,13 @@ function computeGpuPercent(gpu: GpuInfo): number | null {
   return null;
 }
 
+function gpuIndexLabel(gpu: GpuInfo): string {
+  if (gpu.system_index != null && gpu.system_index !== gpu.index) {
+    return `CUDA GPU #${gpu.index} · nvidia-smi #${gpu.system_index}`;
+  }
+  return `CUDA GPU #${gpu.index}`;
+}
+
 function buildRef(build: { config: Record<string, unknown> }): string {
   return String(build.config.ref ?? "latest");
 }
@@ -95,6 +102,11 @@ export default function Dashboard() {
     queryFn: api.listBuilds,
     refetchInterval: 4000,
   });
+  const benchmarks = useQuery({
+    queryKey: ["benchmarks"],
+    queryFn: api.listBenchmarks,
+    refetchInterval: 4000,
+  });
   const local = useQuery({
     queryKey: ["local-models"],
     queryFn: api.listLocal,
@@ -109,6 +121,9 @@ export default function Dashboard() {
   const buildList = [...(builds.data?.builds ?? [])].sort(
     (a, b) => (b.started_at ?? 0) - (a.started_at ?? 0),
   );
+  const benchmarkList = [...(benchmarks.data?.benchmarks ?? [])].sort(
+    (a, b) => (b.started_at ?? 0) - (a.started_at ?? 0),
+  );
   const models = [...(local.data?.models ?? [])].sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
   const gpuList = gpus.data?.gpus ?? [];
   const host = gpus.data?.system ?? null;
@@ -119,6 +134,12 @@ export default function Dashboard() {
   const crashedInstances = allInstances.filter((i) => i.status === "crashed").length;
   const runningBuilds = buildList.filter((build) => build.status === "running").length;
   const failedBuilds = buildList.filter((build) => build.status === "failure").length;
+  const runningBenchmarks = benchmarkList.filter((benchmark) => benchmark.status === "running").length;
+  const failedBenchmarks = benchmarkList.filter((benchmark) => benchmark.status === "failure").length;
+  const bestBenchmarkTg = benchmarkList
+    .map((benchmark) => benchmark.summary?.best_tg?.avg_ts ?? null)
+    .filter((value): value is number => value != null)
+    .sort((a, b) => b - a)[0] ?? null;
 
   const gpuTotals = gpuList.reduce(
     (acc, gpu) => {
@@ -181,6 +202,13 @@ export default function Dashboard() {
           detail: "Toolchain output needs attention.",
         }
       : null,
+    failedBenchmarks > 0
+      ? {
+          tone: "danger" as const,
+          label: `${failedBenchmarks} failed benchmark${failedBenchmarks === 1 ? "" : "s"}`,
+          detail: "Inspect the benchmark history and logs.",
+        }
+      : null,
     host?.cpu_percent != null && host.cpu_percent >= 90
       ? {
           tone: "warning" as const,
@@ -199,7 +227,7 @@ export default function Dashboard() {
       ? {
           tone: "warning" as const,
           label: `GPU pressure ${formatPercent(gpuMemoryPercent, 1)}`,
-          detail: hottestGpu ? `GPU #${hottestGpu.index} is the current hotspot.` : "GPU headroom is low.",
+          detail: hottestGpu ? `${gpuIndexLabel(hottestGpu)} is the current hotspot.` : "GPU headroom is low.",
         }
       : null,
     runningBuilds > 0
@@ -207,6 +235,13 @@ export default function Dashboard() {
           tone: "warning" as const,
           label: `${runningBuilds} active build${runningBuilds === 1 ? "" : "s"}`,
           detail: "Compiler work is running now.",
+        }
+      : null,
+    runningBenchmarks > 0
+      ? {
+          tone: "warning" as const,
+          label: `${runningBenchmarks} active benchmark${runningBenchmarks === 1 ? "" : "s"}`,
+          detail: "Throughput testing is running now.",
         }
       : null,
     health.data && !health.data.auth_required
@@ -231,6 +266,9 @@ export default function Dashboard() {
             </Link>
             <Link to="/builds" className="brand-btn-ghost">
               Builds
+            </Link>
+            <Link to="/benchmarks" className="brand-btn-ghost">
+              Benchmarks
             </Link>
             <Link to="/library" className="brand-btn-primary">
               Library
@@ -331,6 +369,8 @@ export default function Dashboard() {
               <FactCard label="Local weights" value={`${models.length}`} />
               <FactCard label="Latest build" value={buildList[0]?.status ?? "—"} />
               <FactCard label="Latest ref" value={buildList[0] ? buildRef(buildList[0]) : "latest"} mono />
+              <FactCard label="Latest bench" value={benchmarkList[0]?.status ?? "—"} />
+              <FactCard label="Best tg" value={bestBenchmarkTg == null ? "—" : `${bestBenchmarkTg.toFixed(2)} t/s`} />
             </div>
           )}
         </Panel>
@@ -740,7 +780,7 @@ function GpuDisclosure({ gpu }: { gpu: GpuInfo }) {
       summary={
         <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
-            <div className="brand-label">GPU #{gpu.index}</div>
+            <div className="brand-label">{gpuIndexLabel(gpu)}</div>
             <div className="mt-1 break-words text-sm font-semibold text-bone-50">{gpu.name}</div>
           </div>
           <div className="flex flex-wrap items-center gap-2">

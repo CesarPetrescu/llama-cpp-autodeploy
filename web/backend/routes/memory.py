@@ -33,6 +33,7 @@ def _process_to_dict(process: Dict[str, Any]) -> Dict[str, Any]:
 def _gpu_to_dict(gpu: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "index": _field(gpu, "index"),
+        "system_index": _field(gpu, "system_index"),
         "name": _field(gpu, "name"),
         "uuid": _field(gpu, "uuid"),
         "total": _field(gpu, "total"),
@@ -97,6 +98,20 @@ def _managed_processes(request: Request) -> Dict[int, Dict[str, Any]]:
             "kind": "build",
             "status": build.get("status"),
             "detail": str(ref or "latest"),
+        }
+
+    for benchmark in manager.list_benchmarks():
+        pid = benchmark.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        model_ref = None
+        if isinstance(benchmark.get("config"), dict):
+            model_ref = benchmark["config"].get("model_ref")
+        processes[pid] = {
+            "label": benchmark.get("name") or benchmark.get("id") or f"benchmark {pid}",
+            "kind": "benchmark",
+            "status": benchmark.get("status"),
+            "detail": str(model_ref or "llama-bench"),
         }
     return processes
 

@@ -228,6 +228,17 @@ class ProcessManagerTests(unittest.IsolatedAsyncioTestCase):
         split_idx = cmd.index("--tensor-split")
         self.assertEqual(cmd[split_idx + 1], "50,50")
 
+    def test_build_cuda_visible_devices_prefers_gpu_uuid(self):
+        gpus = [
+            process_manager.memory_utils.GPUInfo(index=0, name="GPU0", total=10, free=8, uuid="uuid-gpu0"),
+            process_manager.memory_utils.GPUInfo(index=1, name="GPU1", total=20, free=16, uuid="uuid-gpu1"),
+        ]
+        with mock.patch("web.backend.process_manager.memory_utils.detect_gpus", return_value=gpus):
+            self.assertEqual(
+                process_manager.build_cuda_visible_devices({"gpu_devices": "1"}),
+                "GPU-uuid-gpu1",
+            )
+
     async def test_start_instance_sets_cuda_visible_devices(self):
         seen: dict[str, str | None] = {}
 
@@ -245,8 +256,8 @@ class ProcessManagerTests(unittest.IsolatedAsyncioTestCase):
              mock.patch(
                  "web.backend.process_manager.memory_utils.detect_gpus",
                  return_value=[
-                     process_manager.memory_utils.GPUInfo(index=0, name="GPU0", total=10, free=8),
-                     process_manager.memory_utils.GPUInfo(index=1, name="GPU1", total=20, free=16),
+                     process_manager.memory_utils.GPUInfo(index=0, name="GPU0", total=10, free=8, uuid="uuid-gpu0"),
+                     process_manager.memory_utils.GPUInfo(index=1, name="GPU1", total=20, free=16, uuid="uuid-gpu1"),
                  ],
              ), \
              mock.patch("web.backend.process_manager._spawn_logged_process", side_effect=fake_spawn):
@@ -256,7 +267,7 @@ class ProcessManagerTests(unittest.IsolatedAsyncioTestCase):
                 auto_start=True,
             )
             await asyncio.sleep(0.2)
-            self.assertEqual(seen["cuda_visible_devices"], "0,1")
+            self.assertEqual(seen["cuda_visible_devices"], "GPU-uuid-gpu0,GPU-uuid-gpu1")
             await self.pm.stop_instance(inst.record.id)
 
     async def test_rehydrate_live_instance_is_controllable(self):
@@ -409,6 +420,55 @@ class ProcessManagerTests(unittest.IsolatedAsyncioTestCase):
             logs = [line.rstrip() for line in self.pm.get_build_logs(rec.id)]
             self.assertTrue(any("hello-build" in line for line in logs))
             self.assertEqual(self.pm.get_build(rec.id)["status"], "success")
+
+    async def test_finished_benchmark_parses_result_rows(self):
+        def fake_benchmark_cmd(_config, _model_path, result_file):
+            payload = json.dumps(
+                [
+                    {
+                        "model_type": "qwen test",
+                        "backend": "CUDA",
+                        "threads": 8,
+                        "ngl": 99,
+                        "n_prompt": 512,
+                        "n_gen": 0,
+                        "avg_ts": 1234.5,
+                        "stddev_ts": 12.3,
+                    },
+                    {
+                        "model_type": "qwen test",
+                        "backend": "CUDA",
+                        "threads": 8,
+                        "ngl": 99,
+                        "n_prompt": 0,
+                        "n_gen": 128,
+                        "avg_ts": 98.7,
+                        "stddev_ts": 0.6,
+                    },
+                ]
+            )
+            return [
+                sys.executable,
+                "-c",
+                (
+                    "from pathlib import Path; import sys; "
+                    f"Path({str(result_file)!r}).write_text({payload!r}, encoding='utf-8'); "
+                    "print('bench-ok', flush=True)"
+                ),
+            ]
+
+        with mock.patch("loadmodel.resolve_gguf", return_value=Path("/tmp/fake.gguf")), \
+             mock.patch("web.backend.process_manager._build_benchmark_runner_cmd", side_effect=fake_benchmark_cmd):
+            rec = await self.pm.start_benchmark({"model_ref": "/tmp/fake.gguf", "gpu_devices": "0"})
+            await asyncio.sleep(0.5)
+            data = self.pm.get_benchmark(rec.id)
+
+        self.assertEqual(data["status"], "success")
+        self.assertEqual(data["summary"]["best_tg"]["avg_ts"], 98.7)
+        self.assertEqual(data["summary"]["best_overall"]["avg_ts"], 1234.5)
+        self.assertEqual(len(data["result_rows"]), 2)
+        logs = [line.rstrip() for line in self.pm.get_benchmark_logs(rec.id)]
+        self.assertTrue(any("bench-ok" in line for line in logs))
 
 
 @unittest.skipUnless(FASTAPI_OK, "fastapi not installed")
@@ -583,6 +643,68 @@ class RouteTests(unittest.TestCase):
             if log_file.exists():
                 log_file.unlink()
 
+    def test_benchmark_get_returns_file_backed_logs_and_results(self):
+        log_file = REPO_ROOT / "tests" / "_tmp_route_benchmark.log"
+        result_file = REPO_ROOT / "tests" / "_tmp_route_benchmark.json"
+        log_file.write_text("bench-one\nbench-two\n", encoding="utf-8")
+        result_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "model_type": "qwen bench",
+                        "backend": "CUDA",
+                        "threads": 8,
+                        "ngl": 99,
+                        "n_prompt": 0,
+                        "n_gen": 128,
+                        "avg_ts": 111.1,
+                        "stddev_ts": 1.2,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        try:
+            rec = state_mod.BenchmarkRecord(
+                id="bench1",
+                name="bench1",
+                status="success",
+                log_file=str(log_file),
+                result_file=str(result_file),
+                result_rows=[
+                    {
+                        "test": "tg 128",
+                        "avg_ts": 111.1,
+                        "stddev_ts": 1.2,
+                        "backend": "CUDA",
+                        "model_type": "qwen bench",
+                        "threads": 8,
+                        "n_gpu_layers": 99,
+                        "batch_size": None,
+                        "ubatch_size": None,
+                        "n_prompt": 0,
+                        "n_gen": 128,
+                        "n_depth": 0,
+                        "raw": {},
+                    }
+                ],
+                summary={
+                    "row_count": 1,
+                    "best_tg": {"test": "tg 128", "avg_ts": 111.1},
+                    "best_overall": {"test": "tg 128", "avg_ts": 111.1},
+                },
+            )
+            self.app.state.manager.store.upsert_benchmark(rec)
+            r = self.client.get("/api/benchmarks/bench1", headers=self._hdr())
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()["logs"], ["bench-one\n", "bench-two\n"])
+            self.assertEqual(r.json()["benchmark"]["summary"]["best_tg"]["avg_ts"], 111.1)
+        finally:
+            if log_file.exists():
+                log_file.unlink()
+            if result_file.exists():
+                result_file.unlink()
+
     def test_memory_gpu_route_includes_system_and_processes(self):
         manager = self.app.state.manager
         manager._instances["gpuinst"] = process_manager.ManagedInstance(
@@ -604,6 +726,7 @@ class RouteTests(unittest.TestCase):
             return [
                 {
                     "index": 0,
+                    "system_index": 1,
                     "name": "RTX 4090",
                     "uuid": "GPU-123",
                     "total": 24 * 1024**3,
@@ -656,6 +779,7 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(body["system"]["cpu_percent"], 41.5)
         self.assertEqual(body["system"]["memory_used_h"], "44.00 GB")
         self.assertEqual(body["gpus"][0]["utilization_gpu"], 81)
+        self.assertEqual(body["gpus"][0]["system_index"], 1)
         self.assertEqual(body["gpus"][0]["used_h"], "16.00 GB")
         self.assertEqual(body["gpus"][0]["processes"][0]["label"], "chat-prod")
         self.assertEqual(body["gpus"][0]["processes"][0]["used_memory_h"], "6.00 GB")

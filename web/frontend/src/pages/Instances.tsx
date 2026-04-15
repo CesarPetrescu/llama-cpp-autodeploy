@@ -179,6 +179,13 @@ function formatGpuVisibility(config: InstanceConfig, gpus: GpuInfo[]): string {
   return `CUDA_VISIBLE_DEVICES=${selected.join(",")}`;
 }
 
+function formatGpuIndexLabel(gpu: GpuInfo): string {
+  if (gpu.system_index != null && gpu.system_index !== gpu.index) {
+    return `CUDA #${gpu.index} · nvidia-smi #${gpu.system_index}`;
+  }
+  return `CUDA #${gpu.index}`;
+}
+
 function applyGpuStrategy(
   current: InstanceConfig,
   strategy: GpuStrategy,
@@ -625,7 +632,7 @@ export default function Instances() {
                             className={`rounded-none border p-3 text-left ${active ? "border-lime-300/60 bg-lime-300/10 shadow-[0_0_0_1px_rgba(213,255,64,0.2)]" : "border-white/10 bg-ink-300/60 hover:border-white/20"}`}
                           >
                             <div className="font-medium text-bone-50">
-                              #{gpu.index} {gpu.name}
+                              {formatGpuIndexLabel(gpu)} {gpu.name}
                             </div>
                             <div className="mt-1 text-[11px] uppercase tracking-wider text-bone-500">
                               {gpu.free_h} free · {gpu.total_h} total
@@ -667,7 +674,7 @@ export default function Instances() {
                       {(tensorSplitAuto ? autoPreview : splitEditorValues).map((value, idx) => (
                         <label key={selectedGpus[idx].index} className="flex flex-col gap-1 text-sm">
                           <span className="brand-label">
-                            GPU #{selectedGpus[idx].index} {selectedGpus[idx].name}
+                            {formatGpuIndexLabel(selectedGpus[idx])} {selectedGpus[idx].name}
                           </span>
                           <div className="flex items-center gap-2">
                             <input

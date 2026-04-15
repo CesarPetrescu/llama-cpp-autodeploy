@@ -1,4 +1,4 @@
-"""WebSocket endpoints for streaming instance / build logs."""
+"""WebSocket endpoints for streaming instance / build / benchmark logs."""
 from __future__ import annotations
 
 import asyncio
@@ -63,6 +63,26 @@ async def build_logs(
         return
     manager = websocket.app.state.manager
     buffer = manager.get_live_build_buffer(build_id)
+    if buffer is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    await websocket.accept()
+    await _stream_buffer(websocket, buffer, include_history=bool(history))
+
+
+@router.websocket("/benchmarks/{benchmark_id}/logs")
+async def benchmark_logs(
+    websocket: WebSocket,
+    benchmark_id: str,
+    token: Optional[str] = Query(default=None),
+    history: int = Query(default=1),
+) -> None:
+    cfg = websocket.app.state.cfg
+    if not verify_ws_token(token, cfg):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    manager = websocket.app.state.manager
+    buffer = manager.get_live_benchmark_buffer(benchmark_id)
     if buffer is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
