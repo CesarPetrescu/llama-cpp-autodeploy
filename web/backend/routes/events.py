@@ -1,4 +1,4 @@
-"""WebSocket pub-sub endpoints for live instance / build updates."""
+"""WebSocket pub-sub endpoints for live instance / build / benchmark updates."""
 from __future__ import annotations
 
 import asyncio
@@ -55,3 +55,17 @@ async def build_events(
     manager = websocket.app.state.manager
     await websocket.accept()
     await _pump(websocket, manager.build_events, manager.build_snapshot())
+
+
+@router.websocket("/benchmarks/events")
+async def benchmark_events(
+    websocket: WebSocket,
+    token: Optional[str] = Query(default=None),
+) -> None:
+    cfg = websocket.app.state.cfg
+    if not verify_ws_token(token, cfg):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    manager = websocket.app.state.manager
+    await websocket.accept()
+    await _pump(websocket, manager.benchmark_events, manager.benchmark_snapshot())

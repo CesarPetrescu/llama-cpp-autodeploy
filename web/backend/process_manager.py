@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
 import signal
@@ -15,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from .config import REPO_ROOT, WebConfig, ensure_log_dir
 from .log_buffer import LogBuffer, read_log_tail
-from .state import BuildRecord, InstanceRecord, StateStore
+from .state import BenchmarkRecord, BuildRecord, InstanceRecord, StateStore
 
 # Import the reusable helpers from the existing scripts. These imports assume
 # the backend is launched from the repo root so `loadmodel` etc. are importable.
@@ -23,12 +24,15 @@ import loadmodel  # type: ignore  # noqa: E402
 import memory_utils  # type: ignore  # noqa: E402
 
 LLAMA_SERVER = REPO_ROOT / "bin" / "llama-server"
+LLAMA_BENCH = REPO_ROOT / "bin" / "llama-bench"
 AUTODEVOPS_SCRIPT = REPO_ROOT / "autodevops.py"
+BENCH_RUNNER_MODULE = "web.backend.bench_runner"
 LOG_BUFFER_CAPACITY = 2000
 LOG_TAIL_LINES_DEFAULT = 500
 FOLLOW_POLL_INTERVAL = 0.2
 INSTANCE_ACTIVE_STATUSES = {"running", "stopping"}
 BUILD_ACTIVE_STATUSES = {"running", "cancelling"}
+BENCHMARK_ACTIVE_STATUSES = {"running", "cancelling"}
 RECOVERY_MARKER_ENV = "LLAMA_AUTODEPLOY_MANAGED"
 RECOVERY_INSTANCE_ID_ENV = "LLAMA_AUTODEPLOY_INSTANCE_ID"
 RECOVERY_INSTANCE_NAME_ENV = "LLAMA_AUTODEPLOY_INSTANCE_NAME"
@@ -57,6 +61,13 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _coerce_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _resolve_gpu_device_selection(config: Dict[str, Any]) -> Any:
     selection = str(config.get("gpu_devices") or "").strip()
     strategy = str(config.get("gpu_strategy") or "").strip().lower()
@@ -83,6 +94,12 @@ def build_cuda_visible_devices(config: Dict[str, Any]) -> Optional[str]:
         return None
     if not indices:
         return ""
+    selected = [gpu for gpu in gpus_all if gpu.index in indices]
+    if selected and all(getattr(gpu, "uuid", None) for gpu in selected):
+        return ",".join(
+            f"GPU-{gpu.uuid}" if not str(gpu.uuid).startswith("GPU-") else str(gpu.uuid)
+            for gpu in selected
+        )
     return ",".join(str(idx) for idx in indices)
 
 
@@ -517,6 +534,141 @@ def _signal_record_process(pid: Optional[int], pgid: Optional[int], sig: int) ->
     return False
 
 
+def _append_cli_value(cmd: List[str], flag: str, value: Any) -> None:
+    text = _coerce_text(value)
+    if text is None:
+        return
+    cmd += [flag, text]
+
+
+def _benchmark_test_label(row: Dict[str, Any]) -> str:
+    explicit = _coerce_text(row.get("test"))
+    if explicit:
+        return explicit
+    prompt = _coerce_int(row.get("n_prompt")) or 0
+    gen = _coerce_int(row.get("n_gen")) or 0
+    depth = _coerce_int(row.get("n_depth")) or 0
+    if prompt > 0 and gen > 0:
+        label = f"pg {prompt},{gen}"
+    elif prompt > 0:
+        label = f"pp {prompt}"
+    elif gen > 0:
+        label = f"tg {gen}"
+    else:
+        label = "custom"
+    if depth > 0:
+        label += f" @ d{depth}"
+    return label
+
+
+def _benchmark_tps(row: Dict[str, Any]) -> Optional[float]:
+    value = row.get("avg_ts")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_benchmark_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    backend = _coerce_text(row.get("backend")) or _coerce_text(row.get("backends"))
+    model_type = _coerce_text(row.get("model_type")) or _coerce_text(row.get("model"))
+    return {
+        "test": _benchmark_test_label(row),
+        "avg_ts": _benchmark_tps(row),
+        "stddev_ts": (
+            float(row["stddev_ts"])
+            if row.get("stddev_ts") not in (None, "")
+            else None
+        ),
+        "backend": backend,
+        "model_type": model_type,
+        "threads": _coerce_int(row.get("n_threads") if "n_threads" in row else row.get("threads")),
+        "n_gpu_layers": _coerce_int(row.get("ngl") if "ngl" in row else row.get("n_gpu_layers")),
+        "batch_size": _coerce_int(row.get("n_batch") if "n_batch" in row else row.get("batch_size")),
+        "ubatch_size": _coerce_int(row.get("n_ubatch") if "n_ubatch" in row else row.get("ubatch_size")),
+        "n_prompt": _coerce_int(row.get("n_prompt")),
+        "n_gen": _coerce_int(row.get("n_gen")),
+        "n_depth": _coerce_int(row.get("n_depth")),
+        "raw": row,
+    }
+
+
+def _benchmark_best_row(rows: List[Dict[str, Any]], prefix: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    candidates = rows
+    if prefix is not None:
+        candidates = [row for row in rows if str(row.get("test") or "").startswith(prefix)]
+    return max(
+        (row for row in candidates if row.get("avg_ts") is not None),
+        key=lambda row: float(row["avg_ts"]),
+        default=None,
+    )
+
+
+def _summarize_benchmark_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    best = _benchmark_best_row(rows)
+    best_pp = _benchmark_best_row(rows, "pp ")
+    best_tg = _benchmark_best_row(rows, "tg ")
+    best_pg = _benchmark_best_row(rows, "pg ")
+    head = rows[0] if rows else {}
+    return {
+        "row_count": len(rows),
+        "model_type": head.get("model_type"),
+        "backend": head.get("backend"),
+        "best_overall": {
+            "test": best.get("test"),
+            "avg_ts": best.get("avg_ts"),
+        } if best else {},
+        "best_pp": {
+            "test": best_pp.get("test"),
+            "avg_ts": best_pp.get("avg_ts"),
+        } if best_pp else {},
+        "best_tg": {
+            "test": best_tg.get("test"),
+            "avg_ts": best_tg.get("avg_ts"),
+        } if best_tg else {},
+        "best_pg": {
+            "test": best_pg.get("test"),
+            "avg_ts": best_pg.get("avg_ts"),
+        } if best_pg else {},
+    }
+
+
+def _parse_benchmark_result_file(result_file: Optional[str]) -> tuple[List[Dict[str, Any]], Dict[str, Any], Optional[str]]:
+    path = _log_path(result_file)
+    if path is None or not path.exists():
+        return [], {}, "result file missing"
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError as exc:
+        return [], {}, f"failed to read result file: {exc}"
+    if not raw:
+        return [], {}, "result file is empty"
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        return [], {}, f"failed to parse result JSON: {exc}"
+
+    if isinstance(payload, dict):
+        source_rows = [payload]
+    elif isinstance(payload, list):
+        source_rows = [row for row in payload if isinstance(row, dict)]
+    else:
+        return [], {}, "unexpected benchmark result payload"
+
+    rows = [_normalize_benchmark_row(row) for row in source_rows]
+    summary = _summarize_benchmark_rows(rows)
+    return rows, summary, None
+
+
+def _derive_benchmark_name(config: Dict[str, Any], model_path: Path) -> str:
+    model_ref = _coerce_text(config.get("model_ref")) or model_path.name
+    base = Path(model_ref).stem.replace("_", "-")
+    gpu = _coerce_text(config.get("gpu_devices")) or "auto"
+    return f"{base}-bench-{gpu.replace(',', '-')}"
+
+
 async def _spawn_logged_process(
     cmd: List[str],
     *,
@@ -583,6 +735,24 @@ class ManagedBuild:
         return self.record.status in BUILD_ACTIVE_STATUSES and self.is_alive()
 
 
+class ManagedBenchmark:
+    def __init__(self, record: BenchmarkRecord, log_buffer: LogBuffer) -> None:
+        self.record = record
+        self.log_buffer = log_buffer
+        self.process: Optional[asyncio.subprocess.Process] = None
+        self._watch_task: Optional[asyncio.Task] = None
+        self._tail_task: Optional[asyncio.Task] = None
+        self._done = asyncio.Event()
+        self._done.set()
+        self._finalized = False
+
+    def is_alive(self) -> bool:
+        return _record_matches_process(self.record.pid, self.record.cmdline, self.record.pgid)
+
+    def is_streamable(self) -> bool:
+        return self.record.status in BENCHMARK_ACTIVE_STATUSES and self.is_alive()
+
+
 # ---------------------------------------------------------------------------
 # ProcessManager
 # ---------------------------------------------------------------------------
@@ -594,9 +764,11 @@ class ProcessManager:
         self.store = store
         self._instances: Dict[str, ManagedInstance] = {}
         self._builds: Dict[str, ManagedBuild] = {}
+        self._benchmarks: Dict[str, ManagedBenchmark] = {}
         self._lock = asyncio.Lock()
         self.instance_events = EventBroadcaster()
         self.build_events = EventBroadcaster()
+        self.benchmark_events = EventBroadcaster()
         ensure_log_dir()
 
     # ---- event helpers ----
@@ -621,6 +793,18 @@ class ProcessManager:
             "builds": builds,
         }
 
+    def benchmark_snapshot(self) -> Dict[str, Any]:
+        benchmarks = self.list_benchmarks()
+        active = sum(
+            1 for benchmark in benchmarks if benchmark.get("status") == "running" and benchmark.get("alive")
+        )
+        return {
+            "type": "benchmarks.snapshot",
+            "total": len(benchmarks),
+            "running": active,
+            "benchmarks": benchmarks,
+        }
+
     def _notify_instances(self) -> None:
         with suppress(Exception):
             self.instance_events.publish(self.instance_snapshot())
@@ -628,6 +812,10 @@ class ProcessManager:
     def _notify_builds(self) -> None:
         with suppress(Exception):
             self.build_events.publish(self.build_snapshot())
+
+    def _notify_benchmarks(self) -> None:
+        with suppress(Exception):
+            self.benchmark_events.publish(self.benchmark_snapshot())
 
     # ---- lifecycle ----
 
@@ -662,15 +850,37 @@ class ProcessManager:
             else:
                 self._mark_build_inactive(rec, "failure" if rec.status == "running" else "cancelled")
 
+        for rec in self.store.list_benchmarks():
+            if rec.status not in BENCHMARK_ACTIVE_STATUSES:
+                continue
+            if rec.cmdline and _record_matches_process(rec.pid, rec.cmdline, rec.pgid):
+                if rec.pgid is None:
+                    rec.pgid = _safe_pgid_for_control(rec.pid)
+                    self.store.upsert_benchmark(rec)
+                benchmark = self._build_managed_benchmark(rec)
+                self._benchmarks[rec.id] = benchmark
+                self._attach_active_benchmark(
+                    benchmark,
+                    process=None,
+                    start_offset=_file_size(benchmark.log_buffer.log_file),
+                )
+                if rec.status == "cancelling":
+                    asyncio.create_task(self.stop_benchmark(rec.id))
+            else:
+                self._mark_benchmark_inactive(rec, "failure" if rec.status == "running" else "cancelled")
+
         self._recover_orphan_instances()
         self._notify_instances()
         self._notify_builds()
+        self._notify_benchmarks()
 
     async def shutdown(self) -> None:
         # Keep managed processes running across backend restarts; only stop local
         # tail/watch tasks and release subscribers.
         for build in list(self._builds.values()):
             await self._detach_build(build)
+        for benchmark in list(self._benchmarks.values()):
+            await self._detach_benchmark(benchmark)
         for inst in list(self._instances.values()):
             await self._detach_instance(inst)
 
@@ -951,6 +1161,132 @@ class ProcessManager:
             _signal_record_process(build.record.pid, build.record.pgid, signal.SIGKILL)
             await self._await_done(build._done, timeout=2.0)
 
+    # ---- benchmarks ----
+
+    def _build_managed_benchmark(self, record: BenchmarkRecord) -> ManagedBenchmark:
+        buffer = LogBuffer(capacity=LOG_BUFFER_CAPACITY, log_file=_log_path(record.log_file))
+        buffer.seed_from_file()
+        return ManagedBenchmark(record=record, log_buffer=buffer)
+
+    def list_benchmarks(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for rec in self.store.list_benchmarks():
+            data = asdict(rec)
+            data["alive"] = _record_matches_process(rec.pid, rec.cmdline, rec.pgid) if rec.cmdline else False
+            out.append(data)
+        return out
+
+    def get_benchmark(self, benchmark_id: str) -> Optional[Dict[str, Any]]:
+        rec = self.store.get_benchmark(benchmark_id)
+        if rec is None:
+            return None
+        data = asdict(rec)
+        data["alive"] = _record_matches_process(rec.pid, rec.cmdline, rec.pgid) if rec.cmdline else False
+        return data
+
+    def get_benchmark_logs(self, benchmark_id: str, tail: int = LOG_TAIL_LINES_DEFAULT) -> List[str]:
+        benchmark = self._benchmarks.get(benchmark_id)
+        if benchmark is not None and benchmark.is_streamable():
+            return benchmark.log_buffer.snapshot(tail=tail)
+        rec = self.store.get_benchmark(benchmark_id)
+        if rec is None:
+            return []
+        return read_log_tail(_log_path(rec.log_file), tail=tail)
+
+    def get_live_benchmark_buffer(self, benchmark_id: str) -> Optional[LogBuffer]:
+        benchmark = self._benchmarks.get(benchmark_id)
+        if benchmark is None or not benchmark.is_streamable():
+            return None
+        return benchmark.log_buffer
+
+    async def start_benchmark(self, config: Dict[str, Any]) -> BenchmarkRecord:
+        if not LLAMA_BENCH.exists():
+            raise RuntimeError("llama-bench is missing. Rebuild llama.cpp first.")
+
+        benchmark_id = uuid.uuid4().hex[:12]
+        log_file = ensure_log_dir() / f"bench-{benchmark_id}.log"
+        result_file = ensure_log_dir() / f"bench-{benchmark_id}.json"
+
+        model_ref = _coerce_text(config.get("model_ref"))
+        if not model_ref:
+            raise ValueError("config.model_ref is required")
+
+        models_dir = Path(str(config.get("models_dir") or self.cfg.models_dir)).expanduser()
+        hf_token = _coerce_text(config.get("hf_token"))
+        loop = asyncio.get_running_loop()
+        try:
+            model_path: Path = await loop.run_in_executor(
+                None, loadmodel.resolve_gguf, model_ref, models_dir, hf_token
+            )
+        except SystemExit as exc:
+            raise RuntimeError(f"Failed to resolve model: {exc}") from exc
+
+        record = BenchmarkRecord(
+            id=benchmark_id,
+            name=_coerce_text(config.get("name")) or _derive_benchmark_name(config, model_path),
+            config=dict(config),
+            started_at=time.time(),
+            status="running",
+            log_file=str(log_file),
+            result_file=str(result_file),
+            resolved_model=str(model_path),
+        )
+        benchmark = self._build_managed_benchmark(record)
+        cmd = _build_benchmark_runner_cmd(config, model_path, result_file)
+        benchmark.record.cmdline = cmd
+        benchmark.log_buffer.emit(f"[backend] $ {' '.join(cmd)}")
+        start_offset = _file_size(benchmark.log_buffer.log_file)
+
+        env = os.environ.copy()
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        cuda_visible_devices = build_cuda_visible_devices(config)
+        if cuda_visible_devices is not None:
+            env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
+            benchmark.log_buffer.emit(f"[backend] CUDA_VISIBLE_DEVICES={cuda_visible_devices}")
+
+        try:
+            proc = await _spawn_logged_process(cmd, log_file=log_file, cwd=REPO_ROOT, env=env)
+        except Exception as exc:
+            benchmark.log_buffer.emit(f"[backend] failed to start benchmark: {exc}")
+            record.status = "failure"
+            record.finished_at = time.time()
+            record.exit_code = None
+            record.parse_error = str(exc)
+            self.store.upsert_benchmark(record)
+            self._notify_benchmarks()
+            return record
+
+        record.pid = proc.pid
+        record.pgid = _pgid_for_pid(proc.pid) or proc.pid
+        self.store.upsert_benchmark(record)
+        self._benchmarks[benchmark_id] = benchmark
+        self._attach_active_benchmark(benchmark, process=proc, start_offset=start_offset)
+        self._notify_benchmarks()
+        return record
+
+    async def stop_benchmark(self, benchmark_id: str) -> None:
+        benchmark = self._benchmarks.get(benchmark_id)
+        if benchmark is None:
+            return
+        if benchmark.record.status == "cancelling" and benchmark.is_alive():
+            await self._await_done(benchmark._done, timeout=7.0)
+            return
+        if not benchmark.is_alive() and not benchmark._done.is_set():
+            await self._await_done(benchmark._done, timeout=2.0)
+            return
+        if not benchmark.is_alive():
+            await self._finalize_benchmark(benchmark, exit_code=benchmark.record.exit_code)
+            return
+
+        benchmark.record.status = "cancelling"
+        self.store.upsert_benchmark(benchmark.record)
+        self._notify_benchmarks()
+
+        _signal_record_process(benchmark.record.pid, benchmark.record.pgid, signal.SIGTERM)
+        if not await self._await_done(benchmark._done, timeout=5.0):
+            _signal_record_process(benchmark.record.pid, benchmark.record.pgid, signal.SIGKILL)
+            await self._await_done(benchmark._done, timeout=2.0)
+
     # ---- tracking ----
 
     def _attach_active_instance(
@@ -984,6 +1320,24 @@ class ProcessManager:
             build._watch_task = asyncio.create_task(self._wait_build_exit(build))
         else:
             build._watch_task = asyncio.create_task(self._poll_build_exit(build))
+
+    def _attach_active_benchmark(
+        self,
+        benchmark: ManagedBenchmark,
+        *,
+        process: Optional[asyncio.subprocess.Process],
+        start_offset: int,
+    ) -> None:
+        benchmark.process = process
+        benchmark._finalized = False
+        benchmark._done.clear()
+        benchmark._tail_task = asyncio.create_task(
+            self._follow_log_file(benchmark.log_buffer, start_offset)
+        )
+        if process is not None:
+            benchmark._watch_task = asyncio.create_task(self._wait_benchmark_exit(benchmark))
+        else:
+            benchmark._watch_task = asyncio.create_task(self._poll_benchmark_exit(benchmark))
 
     def _recover_orphan_instances(self) -> List[ManagedInstance]:
         recovered: List[ManagedInstance] = []
@@ -1173,6 +1527,22 @@ class ProcessManager:
             return
         await self._finalize_build(build, None)
 
+    async def _wait_benchmark_exit(self, benchmark: ManagedBenchmark) -> None:
+        assert benchmark.process is not None
+        try:
+            rc = await benchmark.process.wait()
+        except asyncio.CancelledError:
+            return
+        await self._finalize_benchmark(benchmark, rc)
+
+    async def _poll_benchmark_exit(self, benchmark: ManagedBenchmark) -> None:
+        try:
+            while _record_matches_process(benchmark.record.pid, benchmark.record.cmdline, benchmark.record.pgid):
+                await asyncio.sleep(FOLLOW_POLL_INTERVAL)
+        except asyncio.CancelledError:
+            return
+        await self._finalize_benchmark(benchmark, None)
+
     async def _finalize_instance(self, inst: ManagedInstance, exit_code: Optional[int]) -> None:
         if inst._finalized:
             return
@@ -1222,6 +1592,37 @@ class ProcessManager:
         build._done.set()
         self._notify_builds()
 
+    async def _finalize_benchmark(self, benchmark: ManagedBenchmark, exit_code: Optional[int]) -> None:
+        if benchmark._finalized:
+            return
+        benchmark._finalized = True
+        await self._cancel_task(benchmark._tail_task)
+        benchmark.log_buffer.seed_from_file()
+
+        status_before = benchmark.record.status
+        rows, summary, parse_error = _parse_benchmark_result_file(benchmark.record.result_file)
+        benchmark.process = None
+        benchmark.record.exit_code = exit_code
+        benchmark.record.finished_at = time.time()
+        benchmark.record.pid = None
+        benchmark.record.pgid = None
+        benchmark.record.result_rows = rows
+        benchmark.record.summary = summary
+        benchmark.record.parse_error = parse_error
+        if status_before == "cancelling":
+            benchmark.record.status = "cancelled"
+        elif exit_code == 0:
+            benchmark.record.status = "success"
+        else:
+            benchmark.record.status = "failure"
+        if parse_error and benchmark.record.status == "success":
+            benchmark.log_buffer.emit(f"[backend] result parse warning: {parse_error}")
+        benchmark.log_buffer.emit(f"[backend] benchmark exited with code {exit_code!r}")
+        self.store.upsert_benchmark(benchmark.record)
+        self._benchmarks.pop(benchmark.record.id, None)
+        benchmark._done.set()
+        self._notify_benchmarks()
+
     async def _detach_instance(self, inst: ManagedInstance) -> None:
         await self._cancel_task(inst._watch_task)
         await self._cancel_task(inst._tail_task)
@@ -1231,6 +1632,11 @@ class ProcessManager:
         await self._cancel_task(build._watch_task)
         await self._cancel_task(build._tail_task)
         build.log_buffer.close()
+
+    async def _detach_benchmark(self, benchmark: ManagedBenchmark) -> None:
+        await self._cancel_task(benchmark._watch_task)
+        await self._cancel_task(benchmark._tail_task)
+        benchmark.log_buffer.close()
 
     async def _cancel_task(self, task: Optional[asyncio.Task]) -> None:
         if task is None or task.done() or task is asyncio.current_task():
@@ -1263,6 +1669,17 @@ class ProcessManager:
         rec.pgid = None
         self.store.upsert_build(rec)
 
+    def _mark_benchmark_inactive(self, rec: BenchmarkRecord, status: str) -> None:
+        rows, summary, parse_error = _parse_benchmark_result_file(rec.result_file)
+        rec.status = status
+        rec.finished_at = time.time()
+        rec.pid = None
+        rec.pgid = None
+        rec.result_rows = rows
+        rec.summary = summary
+        rec.parse_error = parse_error
+        self.store.upsert_benchmark(rec)
+
 
 # ---------------------------------------------------------------------------
 # Build command construction
@@ -1289,3 +1706,60 @@ def _build_autodevops_cmd(config: Dict[str, Any]) -> List[str]:
     if _coerce_bool(config.get("cpu_only")):
         cmd.append("--cpu-only")
     return cmd
+
+
+def _build_llama_bench_cmd(config: Dict[str, Any], model_path: Path) -> List[str]:
+    cmd = [
+        str(LLAMA_BENCH),
+        "-m", str(model_path),
+        "-o", "json",
+        "-oe", "md",
+        "--progress",
+    ]
+
+    _append_cli_value(cmd, "-r", _coerce_int(config.get("repetitions")) or 5)
+    _append_cli_value(cmd, "--delay", _coerce_int(config.get("delay")) or 0)
+    _append_cli_value(cmd, "-p", _coerce_text(config.get("n_prompt")) or "512")
+    _append_cli_value(cmd, "-n", _coerce_text(config.get("n_gen")) or "128")
+    _append_cli_value(cmd, "-pg", config.get("pg"))
+    _append_cli_value(cmd, "-d", _coerce_text(config.get("n_depth")) or "0")
+    _append_cli_value(cmd, "-b", _coerce_text(config.get("batch_size")) or "2048")
+    _append_cli_value(cmd, "-ub", _coerce_text(config.get("ubatch_size")) or "512")
+    _append_cli_value(cmd, "-t", _coerce_text(config.get("threads")) or "8")
+    _append_cli_value(cmd, "-ngl", _coerce_text(config.get("n_gpu_layers")) or "99")
+    _append_cli_value(cmd, "-sm", _coerce_text(config.get("split_mode")) or "layer")
+    _append_cli_value(cmd, "-mg", _coerce_text(config.get("main_gpu")) or "0")
+    _append_cli_value(cmd, "-ts", config.get("tensor_split"))
+
+    if _coerce_bool(config.get("flash_attn", True)):
+        cmd += ["-fa", "1"]
+    else:
+        cmd += ["-fa", "0"]
+
+    if _coerce_bool(config.get("embeddings")):
+        cmd += ["-embd", "1"]
+    if _coerce_bool(config.get("no_kv_offload")):
+        cmd += ["-nkvo", "1"]
+    if _coerce_bool(config.get("no_warmup")):
+        cmd.append("--no-warmup")
+
+    extra_raw = config.get("extra_flags") or ""
+    if isinstance(extra_raw, list):
+        extra = [str(token) for token in extra_raw]
+    else:
+        extra = shlex.split(str(extra_raw))
+    cmd += extra
+    return cmd
+
+
+def _build_benchmark_runner_cmd(config: Dict[str, Any], model_path: Path, result_file: Path) -> List[str]:
+    bench_cmd = _build_llama_bench_cmd(config, model_path)
+    return [
+        sys.executable,
+        "-m",
+        BENCH_RUNNER_MODULE,
+        "--result-file",
+        str(result_file),
+        "--",
+        *bench_cmd,
+    ]

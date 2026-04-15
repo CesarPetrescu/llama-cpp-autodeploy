@@ -92,6 +92,7 @@ export interface HealthResponse {
 
 export interface GpuInfo {
   index: number;
+  system_index?: number | null;
   name: string;
   uuid?: string | null;
   total: number | null;
@@ -219,6 +220,13 @@ export interface BuildsEvent {
   builds: BuildRecord[];
 }
 
+export interface BenchmarksEvent {
+  type: "benchmarks.snapshot";
+  total: number;
+  running: number;
+  benchmarks: BenchmarkRecord[];
+}
+
 export interface InstanceConfig {
   mode: "llm" | "embed";
   model_ref: string;
@@ -278,6 +286,57 @@ export interface BuildRecord {
 export interface RecoverInstancesResponse {
   recovered: Instance[];
   instances: Instance[];
+}
+
+export interface BenchmarkRow {
+  test: string;
+  avg_ts: number | null;
+  stddev_ts: number | null;
+  backend: string | null;
+  model_type: string | null;
+  threads: number | null;
+  n_gpu_layers: number | null;
+  batch_size: number | null;
+  ubatch_size: number | null;
+  n_prompt: number | null;
+  n_gen: number | null;
+  n_depth: number | null;
+  raw: Record<string, unknown>;
+}
+
+export interface BenchmarkSummaryStat {
+  test?: string | null;
+  avg_ts?: number | null;
+}
+
+export interface BenchmarkSummary {
+  row_count: number;
+  model_type?: string | null;
+  backend?: string | null;
+  best_overall?: BenchmarkSummaryStat;
+  best_pp?: BenchmarkSummaryStat;
+  best_tg?: BenchmarkSummaryStat;
+  best_pg?: BenchmarkSummaryStat;
+}
+
+export interface BenchmarkRecord {
+  id: string;
+  name: string;
+  config: Record<string, unknown>;
+  started_at: number | null;
+  finished_at: number | null;
+  exit_code: number | null;
+  status: "pending" | "running" | "cancelling" | "cancelled" | "success" | "failure";
+  log_file: string | null;
+  result_file?: string | null;
+  pid: number | null;
+  pgid?: number | null;
+  cmdline?: string[];
+  alive: boolean;
+  resolved_model?: string | null;
+  result_rows?: BenchmarkRow[];
+  summary?: BenchmarkSummary;
+  parse_error?: string | null;
 }
 
 // API methods --------------------------------------------------------------
@@ -353,6 +412,18 @@ export const api = {
     apiFetch<{ build: BuildRecord; logs: string[] }>(`/api/builds/${id}`),
   stopBuild: (id: string) =>
     apiFetch<{ build: BuildRecord }>(`/api/builds/${id}/stop`, {
+      method: "POST",
+    }),
+  listBenchmarks: () => apiFetch<{ benchmarks: BenchmarkRecord[] }>("/api/benchmarks"),
+  startBenchmark: (payload: Record<string, unknown>) =>
+    apiFetch<{ benchmark: BenchmarkRecord }>("/api/benchmarks", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  getBenchmark: (id: string) =>
+    apiFetch<{ benchmark: BenchmarkRecord; logs: string[] }>(`/api/benchmarks/${id}`),
+  stopBenchmark: (id: string) =>
+    apiFetch<{ benchmark: BenchmarkRecord }>(`/api/benchmarks/${id}/stop`, {
       method: "POST",
     }),
 };

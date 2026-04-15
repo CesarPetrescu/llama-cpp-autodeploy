@@ -74,13 +74,40 @@ preview, and logs.
   <img src="docs/screenshots/web-builds.png" alt="Builds page" width="100%" />
 </p>
 
+#### Benchmarks
+
+The Benchmarks page runs `llama-bench`, keeps the command and logs, and stores
+parsed throughput results. The capture below is a live run of
+`unsloth/Qwen3.5-0.8B-GGUF:Q4_K_XL` pinned to the RTX 4060.
+
+<p align="center">
+  <img src="docs/screenshots/web-benchmarks.png" alt="Benchmarks page" width="100%" />
+</p>
+
+#### Memory Planning
+
+The Memory page gives you a quick VRAM and RAM view before you launch a model.
+
+<p align="center">
+  <img src="docs/screenshots/web-memory.png" alt="Memory planning page" width="100%" />
+</p>
+
+#### Model Library
+
+The Library page shows local GGUFs and pulls new ones straight from Hugging Face.
+
+<p align="center">
+  <img src="docs/screenshots/web-library.png" alt="Model library page" width="100%" />
+</p>
+
 #### Mobile
 
 The same control plane also works on narrow screens.
 
 <p align="center">
-  <img src="docs/screenshots/web-dashboard-mobile.png" alt="Dashboard on mobile" width="42%" />
-  <img src="docs/screenshots/web-builds-mobile.png" alt="Builds on mobile" width="42%" />
+  <img src="docs/screenshots/web-dashboard-mobile.png" alt="Dashboard on mobile" width="30%" />
+  <img src="docs/screenshots/web-builds-mobile.png" alt="Builds on mobile" width="30%" />
+  <img src="docs/screenshots/web-benchmarks-mobile.png" alt="Benchmarks on mobile" width="30%" />
 </p>
 
 ## Start here
@@ -162,6 +189,7 @@ requests to the backend at `http://127.0.0.1:8787`.
 | **Memory** | Estimate placement and VRAM needs before launch |
 | **Library** | Scan local GGUFs and download new ones from Hugging Face |
 | **Builds** | Run `autodevops.py`, inspect supported options, and stream logs |
+| **Benchmarks** | Run `llama-bench`, pin tests to specific GPUs, and keep structured throughput history |
 | **Settings** | Set backend URL and bearer token |
 
 ## How the app fits together
@@ -294,7 +322,7 @@ The backend:
 
 - binds to `0.0.0.0` by default
 - requires a bearer token on every request except `GET /api/health`
-- persists managed instances and builds in `.web_state.json`
+- persists managed instances, builds, and benchmark runs in `.web_state.json`
 - tees logs to `web/logs/<id>.log`
 - can re-adopt orphaned repo-launched `llama-server` processes on startup
 - can force that same recovery flow through `POST /api/instances/recover`
@@ -307,6 +335,7 @@ The backend:
 - Models: `GET /api/models/local`, `GET /api/models/binary-caps`, `POST /api/models/download`
 - Instances: `GET /POST /api/instances`, `GET /api/instances/{id}`, `POST /api/instances/{id}/start|stop|restart`, `DELETE /api/instances/{id}`, `POST /api/instances/recover`, `WS /api/instances/{id}/logs?token=...`
 - Builds: `GET /POST /api/builds`, `GET /api/builds/{id}`, `POST /api/builds/{id}/stop`, `WS /api/builds/{id}/logs?token=...`
+- Benchmarks: `GET /POST /api/benchmarks`, `GET /api/benchmarks/{id}`, `POST /api/benchmarks/{id}/stop`, `WS /api/benchmarks/{id}/logs?token=...`
 
 Full schema: `GET /docs`
 </details>

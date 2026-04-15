@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from .auth import make_http_dependency
 from .config import FRONTEND_DIST, STATE_PATH, WebConfig, load_config
 from .process_manager import ProcessManager
-from .routes import builds, events, health, instances, logs, memory, models
+from .routes import benchmarks, builds, events, health, instances, logs, memory, models
 from .state import StateStore
 
 
@@ -57,6 +57,7 @@ def create_app(cfg: Optional[WebConfig] = None) -> FastAPI:
     app.include_router(models.router, prefix="/api/models", dependencies=protected)
     app.include_router(instances.router, prefix="/api/instances", dependencies=protected)
     app.include_router(builds.router, prefix="/api/builds", dependencies=protected)
+    app.include_router(benchmarks.router, prefix="/api/benchmarks", dependencies=protected)
 
     # WebSocket endpoints (auth handled inside the handler via query token)
     app.include_router(logs.router, prefix="/api")

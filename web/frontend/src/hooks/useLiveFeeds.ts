@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { BuildsEvent, InstancesEvent } from "@/api/client";
+import { BenchmarksEvent, BuildsEvent, InstancesEvent } from "@/api/client";
 import { useManagedWebSocket } from "./useManagedWebSocket";
 
-type AnyEvent = InstancesEvent | BuildsEvent;
+type AnyEvent = InstancesEvent | BuildsEvent | BenchmarksEvent;
 
 /**
  * Opens both /api/instances/events and /api/builds/events WebSockets once
@@ -16,6 +16,7 @@ export function useLiveFeeds() {
   const qc = useQueryClient();
   const [instances, setInstances] = useState({ total: 0, running: 0 });
   const [builds, setBuilds] = useState({ total: 0, running: 0 });
+  const [benchmarks, setBenchmarks] = useState({ total: 0, running: 0 });
   const instancesSocket = useManagedWebSocket({
     path: "/api/instances/events",
     onMessage: (ev) => {
@@ -42,8 +43,22 @@ export function useLiveFeeds() {
       }
     },
   });
+  const benchmarksSocket = useManagedWebSocket({
+    path: "/api/benchmarks/events",
+    onMessage: (ev) => {
+      try {
+        const payload = JSON.parse(String(ev.data)) as AnyEvent;
+        if (payload.type !== "benchmarks.snapshot") return;
+        setBenchmarks({ total: payload.total, running: payload.running });
+        qc.setQueryData(["benchmarks"], { benchmarks: payload.benchmarks });
+      } catch {
+        /* ignore malformed */
+      }
+    },
+  });
 
-  const connected = instancesSocket.connected || buildsSocket.connected;
+  const connected =
+    instancesSocket.connected || buildsSocket.connected || benchmarksSocket.connected;
 
-  return { instances, builds, connected };
+  return { instances, builds, benchmarks, connected };
 }
