@@ -3,19 +3,17 @@ set -euo pipefail
 cd /root/llama-cpp-server
 source venv/bin/activate
 
-# Qwen3 Reranker 8B – Transformers + bitsandbytes 8-bit
+# Qwen3 Reranker 4B GGUF – llama.cpp reranker server
 # Listens on 0.0.0.0:45542
-export CUDA_VISIBLE_DEVICES=0,1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+TENSOR_SPLIT="${TENSOR_SPLIT:-50,50}"
+CTX_SIZE="${CTX_SIZE:-8192}"
+PARALLEL="${PARALLEL:-1}"
 
-exec python loadmodel.py --rerank Qwen/Qwen3-Reranker-4B \
+CUDA_VISIBLE_DEVICES=0,1 \
+exec python loadmodel.py --rerank 'DevQuasar/Qwen.Qwen3-Reranker-4B-GGUF:Qwen.Qwen3-Reranker-4B.Q6_K.gguf' \
   --host 0.0.0.0 \
   --port 45542 \
-  --device cuda \
-  --device-map auto \
-  --dtype bf16 \
-  --quant 8bit \
-  --doc-batch 1 \
-  --max-len 8192 \
-  --max-memory "4GiB,4GiB,cpu=48GiB" \
-  --trust-remote-code
+  --n-gpu-layers 999 \
+  --tensor-split "${TENSOR_SPLIT}" \
+  --ctx-size "${CTX_SIZE}" \
+  --extra --parallel "${PARALLEL}" --threads 32

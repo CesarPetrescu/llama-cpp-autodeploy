@@ -23,15 +23,20 @@ Notes (reranker):
 
 import argparse
 import json
+import math
 import os
 import re
 import shlex
 import signal
+import socket
 import subprocess
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import List, Optional, Tuple
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 import memory_utils
 from process_utils import register_process, terminate_process, unregister_process
@@ -187,6 +192,16 @@ def resolve_gguf(spec: str, models_dir: Path, hf_token: Optional[str]) -> Path:
     except Exception as e:
         die(f"Download failed for {repo}/{pick}: {e}")
     return Path()
+
+
+def is_probably_gguf_spec(spec: str) -> bool:
+    raw = str(spec).strip()
+    if not raw:
+        return False
+    if raw.lower().endswith(".gguf"):
+        return True
+    # Our HF GGUF shorthand is repo:file.gguf or repo:quant
+    return ":" in raw
 
 def parse_max_memory_arg(s: Optional[str]) -> Optional[dict]:
     """
@@ -353,6 +368,26 @@ def launch_llama_server_with_backoff(
             die("llama-server failed to start even with CPU-only; giving up")
         ngl_try = max(0, ngl_try // 2)
         info(f"[llama][retry] lowering --n-gpu-layers to {ngl_try} (spill remainder to CPU)")
+
+
+def wait_for_process(proc: subprocess.Popen) -> None:
+    rc = 0
+    try:
+        rc = proc.wait()
+    except KeyboardInterrupt:
+        rc = 130
+        try:
+            proc.send_signal(signal.SIGINT)
+            rc = proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            try:
+                rc = proc.wait(timeout=5)
+            except Exception:
+                pass
+    finally:
+        unregister_process(proc)
+    sys.exit(rc)
 
 # --------------------------- Transformers Reranker (Qwen) ---------------------------
 
@@ -533,6 +568,196 @@ class TRHandler(BaseHTTPRequestHandler):
 
         self._send(404, {"error": "not found"})
 
+
+class GGUFRerankHandler(BaseHTTPRequestHandler):
+    backend_base_url = ""
+    backend_proc: Optional[subprocess.Popen] = None
+    instruction = TRHandler.instruction
+    top_logprobs = 64
+    timeout = 120.0
+
+    def _send(self, code: int, payload: dict):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            backend_alive = self.__class__.backend_proc is not None and self.__class__.backend_proc.poll() is None
+            status = "ok" if backend_alive else "degraded"
+            self._send(200, {"status": status, "mode": "gguf-rerank"})
+        elif self.path == "/v1/models":
+            self._send(200, {"data": [{"id": "qwen-reranker", "object": "model"}]})
+        else:
+            self._send(404, {"error": "not found"})
+
+    @classmethod
+    def _format_pair(cls, instruction: str, query: str, doc: str) -> str:
+        return TRHandler._format_pair(instruction, query, doc)
+
+    @staticmethod
+    def _maybe_parse_pair_line(line: str) -> Optional[Tuple[str, str]]:
+        return TRHandler._maybe_parse_pair_line(line)
+
+    @classmethod
+    def _backend_request(cls, path: str, payload: dict) -> dict:
+        if cls.backend_proc is None or cls.backend_proc.poll() is not None:
+            raise RuntimeError("backend llama-server is not running")
+        req = urlrequest.Request(
+            cls.backend_base_url + path,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=cls.timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urlerror.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"backend HTTP {e.code}: {body}") from e
+        except Exception as e:
+            raise RuntimeError(f"backend request failed: {e}") from e
+
+    @classmethod
+    def _score_pair(cls, prompt: str) -> float:
+        data = cls._backend_request(
+            "/completion",
+            {
+                "prompt": prompt,
+                "n_predict": 1,
+                "temperature": 0.0,
+                "logprobs": cls.top_logprobs,
+            },
+        )
+        probs = data.get("completion_probabilities") or []
+        if not probs:
+            raise RuntimeError("backend did not return completion probabilities")
+        step = probs[0]
+        yes_lp = None
+        no_lp = None
+        for item in step.get("top_logprobs") or []:
+            tok = item.get("token")
+            lp = item.get("logprob")
+            if tok == "yes":
+                yes_lp = lp
+            elif tok == "no":
+                no_lp = lp
+
+        # If the chosen token is yes/no, prefer its exact logprob even if top_logprobs was truncated.
+        chosen_tok = step.get("token") or data.get("content")
+        chosen_lp = step.get("logprob")
+        if chosen_tok == "yes" and yes_lp is None:
+            yes_lp = chosen_lp
+        if chosen_tok == "no" and no_lp is None:
+            no_lp = chosen_lp
+
+        if yes_lp is None and no_lp is None:
+            raise RuntimeError("yes/no logits were not present in backend response")
+        if yes_lp is None:
+            return 0.0
+        if no_lp is None:
+            return 1.0
+
+        m = max(yes_lp, no_lp)
+        yes_exp = math.exp(yes_lp - m)
+        no_exp = math.exp(no_lp - m)
+        return float(yes_exp / (yes_exp + no_exp))
+
+    @classmethod
+    def _score_pairs(cls, pairs: List[str]) -> List[float]:
+        return [cls._score_pair(prompt) for prompt in pairs]
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        try:
+            req = json.loads(raw.decode("utf-8"))
+        except Exception:
+            self._send(400, {"error": "invalid json"})
+            return
+
+        try:
+            if self.path in ("/v1/embeddings", "/embeddings"):
+                arr = req.get("input") or []
+                if not isinstance(arr, list) or not arr:
+                    self._send(400, {"error": "expected 'input': list[str]"})
+                    return
+
+                pairs: List[str] = []
+                for line in arr:
+                    if not isinstance(line, str):
+                        self._send(400, {"error": "inputs must be strings"})
+                        return
+                    parsed = self._maybe_parse_pair_line(line)
+                    if parsed:
+                        q, d = parsed
+                        pairs.append(self._format_pair(self.__class__.instruction, q, d))
+                    else:
+                        pairs.append(line)
+
+                scores = self._score_pairs(pairs)
+                data = [{"embedding": [float(s)]} for s in scores]
+                self._send(200, {"data": data})
+                return
+
+            if self.path in ("/rerank", "/v1/rerank", "/v1/reranking"):
+                query = req.get("query", "")
+                docs_in = req.get("documents", [])
+                ret = bool(req.get("return_documents", False))
+                instr = req.get("instruction", self.__class__.instruction)
+                top_k = req.get("top_k") or req.get("top_n")
+
+                if not isinstance(query, str) or not isinstance(docs_in, list) or not docs_in:
+                    self._send(400, {"error": "expected fields: query:str, documents:list"})
+                    return
+
+                def get_text(d):
+                    if isinstance(d, dict):
+                        for k in ("text", "content", "value", "document", "doc"):
+                            if k in d and isinstance(d[k], str):
+                                return d[k]
+                        return json.dumps(d, ensure_ascii=False)
+                    return str(d)
+
+                docs_text = [get_text(d) for d in docs_in]
+                pairs = [self._format_pair(instr, query, t) for t in docs_text]
+                scores = self._score_pairs(pairs)
+
+                order = sorted(range(len(docs_in)), key=lambda i: scores[i], reverse=True)
+                if isinstance(top_k, int) and top_k > 0:
+                    order = order[:top_k]
+
+                results = []
+                for i in order:
+                    s = float(scores[i])
+                    doc_obj = docs_in[i] if isinstance(docs_in[i], dict) else {"text": docs_text[i]}
+                    item = {
+                        "index": i,
+                        "relevance_score": s,
+                        "score": s,
+                    }
+                    if ret:
+                        item["document"] = doc_obj
+                    if isinstance(docs_in[i], str):
+                        item["document_text"] = docs_text[i]
+                    results.append(item)
+
+                self._send(200, {"results": results})
+                return
+
+            self._send(404, {"error": "not found"})
+        except Exception as e:
+            self._send(500, {"error": str(e)})
+
+
+def find_free_port(host: str = "127.0.0.1") -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return int(s.getsockname()[1])
+
 def serve_transformers_rerank(
     model_ref: str,
     host: str,
@@ -643,6 +868,74 @@ def serve_transformers_rerank(
     finally:
         httpd.server_close()
 
+
+def serve_gguf_rerank(
+    model_path: Path,
+    host: str,
+    port: int,
+    extra: List[str],
+    n_gpu_layers: Optional[int],
+    tensor_split: Optional[str],
+    split_mode: Optional[str],
+    ctx_size: Optional[int],
+    n_cpu_moe: Optional[int],
+    cpu_moe: bool,
+    instruction: Optional[str],
+):
+    backend_host = "127.0.0.1"
+    backend_port = find_free_port(backend_host)
+    backend_extra = list(extra)
+    if "--flash-attn" not in backend_extra and "-fa" not in backend_extra:
+        backend_extra = ["--flash-attn", "on"] + backend_extra
+
+    backend_proc = launch_llama_server_with_backoff(
+        model_path=model_path,
+        host=backend_host,
+        port=backend_port,
+        extra=backend_extra,
+        n_gpu_layers=n_gpu_layers,
+        tensor_split=tensor_split,
+        split_mode=split_mode,
+        ctx_size=ctx_size,
+        n_cpu_moe=n_cpu_moe,
+        cpu_moe=cpu_moe,
+    )
+
+    GGUFRerankHandler.backend_proc = backend_proc
+    GGUFRerankHandler.backend_base_url = f"http://{backend_host}:{backend_port}"
+    GGUFRerankHandler.instruction = instruction or GGUFRerankHandler.instruction
+
+    httpd = ThreadingHTTPServer((host, port), GGUFRerankHandler)
+    backend_rc = {"code": 0}
+
+    def monitor_backend() -> None:
+        rc = backend_proc.wait()
+        backend_rc["code"] = rc
+        info(f"[rerank][backend] llama-server exited with code {rc}")
+        try:
+            httpd.shutdown()
+        except Exception:
+            pass
+
+    monitor = threading.Thread(target=monitor_backend, daemon=True)
+    monitor.start()
+
+    info(
+        f"[rerank][gguf] listening on http://{host}:{port} "
+        f"(proxying to {GGUFRerankHandler.backend_base_url})"
+    )
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
+        if backend_proc.poll() is None:
+            terminate_process(backend_proc)
+        unregister_process(backend_proc)
+    if backend_rc["code"] not in (0, None):
+        sys.exit(backend_rc["code"])
+
 # --------------------------- CLI ---------------------------
 
 def main():
@@ -650,7 +943,7 @@ def main():
     gmode = p.add_mutually_exclusive_group(required=True)
     gmode.add_argument("--llm", action="store_true", help="Run llama-server for text generation")
     gmode.add_argument("--embed", action="store_true", help="Run llama-server for embeddings")
-    gmode.add_argument("--rerank", action="store_true", help="Run Transformers-based reranker")
+    gmode.add_argument("--rerank", action="store_true", help="Run reranker (Transformers model id or GGUF via llama.cpp)")
 
     p.add_argument("model", help="""
 For GGUF modes (--llm/--embed):
@@ -658,9 +951,10 @@ For GGUF modes (--llm/--embed):
   - 'org/repo:quant'  (e.g. Qwen/Qwen3-Embedding-8B-GGUF:Q8_0)
   - 'org/repo:file.gguf' (full filename)
 
-For --rerank (Transformers):
-  - HF model id, e.g. Qwen/Qwen3-Reranker-8B
-  - Or a local directory with config/tokenizer/weights
+For --rerank:
+  - HF model id / local Transformers directory, or
+  - Local .gguf path, or
+  - 'org/repo:file.gguf' for llama.cpp-native reranking
 """)
 
     # Common
@@ -696,7 +990,7 @@ For --rerank (Transformers):
     args = p.parse_args()
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    if args.rerank:
+    if args.rerank and not is_probably_gguf_spec(args.model):
         serve_transformers_rerank(
             model_ref=args.model,
             host=args.host,
@@ -709,6 +1003,37 @@ For --rerank (Transformers):
             max_len=args.max_len,
             max_memory=args.max_memory,
             trust_remote_code=args.trust_remote_code,
+            instruction=args.instruction,
+        )
+        return
+
+    if args.rerank:
+        gguf_path = resolve_gguf(args.model, Path(args.path), args.hf_token)
+        extra = args.extra or []
+
+        tensor_split = args.tensor_split
+        if tensor_split:
+            kind, _ratios, err = memory_utils.parse_tensor_split(tensor_split)
+            if kind == "invalid":
+                die(err or "Invalid --tensor-split value.")
+            if kind == "auto":
+                tensor_split = memory_utils.auto_tensor_split()
+
+        split_mode = args.split_mode
+        if split_mode and str(split_mode).strip().lower() == "default":
+            split_mode = None
+
+        serve_gguf_rerank(
+            model_path=gguf_path,
+            host=args.host,
+            port=args.port,
+            extra=extra,
+            n_gpu_layers=args.n_gpu_layers,
+            tensor_split=tensor_split,
+            split_mode=split_mode,
+            ctx_size=args.ctx_size,
+            n_cpu_moe=args.n_cpu_moe,
+            cpu_moe=args.cpu_moe,
             instruction=args.instruction,
         )
         return
@@ -751,16 +1076,7 @@ For --rerank (Transformers):
         reasoning_format=args.reasoning_format,
         no_context_shift=args.no_context_shift,
     )
-    try:
-        proc.wait()
-    except KeyboardInterrupt:
-        try:
-            proc.send_signal(signal.SIGINT)
-            proc.wait(timeout=5)
-        except Exception:
-            proc.kill()
-    finally:
-        unregister_process(proc)
+    wait_for_process(proc)
 
 if __name__ == "__main__":
     main()
