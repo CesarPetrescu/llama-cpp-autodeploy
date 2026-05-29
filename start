@@ -23,6 +23,10 @@ run_loadmodel_cli() {
   exec "$PY" "$SCRIPT_DIR/loadmodel_cli.py"
 }
 
+run_web_backend() {
+  exec "$PY" "$SCRIPT_DIR/web_cli.py" "$@"
+}
+
 cmd="${1:-}"
 if [[ $# -gt 0 ]]; then
   shift
@@ -35,10 +39,14 @@ case "$cmd" in
   loadmodel|model|launcher)
     run_loadmodel_cli
     ;;
+  web|backend|server)
+    run_web_backend "$@"
+    ;;
   "" )
     echo "Select tool:"
     echo "  1) AutodevOps builder (build llama.cpp)"
     echo "  2) Loadmodel launcher (run llama-server / reranker)"
+    echo "  3) Web backend (browser UI + HTTP API)"
     echo "  q) Quit"
     echo -n "> "
     read -r choice || exit 0
@@ -48,6 +56,9 @@ case "$cmd" in
         ;;
       2|l|loadmodel|model|launcher)
         run_loadmodel_cli
+        ;;
+      3|w|web|backend|server)
+        run_web_backend
         ;;
       q|quit|exit)
         exit 0
@@ -64,6 +75,7 @@ Usage:
   ./start                # interactive chooser
   ./start autodevops      # run AutodevOps builder TUI
   ./start loadmodel       # run Loadmodel launcher TUI
+  ./start web [--init]    # run the browser backend (--init generates a token)
 EOF
     ;;
   *)
@@ -72,4 +84,3 @@ EOF
     exit 2
     ;;
 esac
-

@@ -105,7 +105,11 @@ def edit_line_dialog(
             visible = "".join(buffer[scroll : scroll + render_width])
             try:
                 field.erase()
-                field.addnstr(0, 0, visible.ljust(render_width), render_width, curses.A_REVERSE)
+                try:
+                    field.addnstr(0, 0, visible.ljust(render_width), render_width, curses.A_REVERSE)
+                except curses.error:
+                    # Ignore last-column write failures; keep the dialog usable.
+                    pass
                 field.move(0, max(0, min(render_width - 1, cursor - scroll)))
                 field.refresh()
                 win.refresh()
