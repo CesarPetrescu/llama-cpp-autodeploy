@@ -606,8 +606,21 @@ def _benchmark_best_row(rows: List[Dict[str, Any]], prefix: Optional[str] = None
     )
 
 
+def _benchmark_best_non_pp_row(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    candidates = [
+        row
+        for row in rows
+        if not str(row.get("test") or "").startswith("pp ")
+    ]
+    return max(
+        (row for row in candidates if row.get("avg_ts") is not None),
+        key=lambda row: float(row["avg_ts"]),
+        default=None,
+    )
+
+
 def _summarize_benchmark_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    best = _benchmark_best_row(rows)
+    best = _benchmark_best_non_pp_row(rows) or _benchmark_best_row(rows)
     best_pp = _benchmark_best_row(rows, "pp ")
     best_tg = _benchmark_best_row(rows, "tg ")
     best_pg = _benchmark_best_row(rows, "pg ")
@@ -1172,6 +1185,8 @@ class ProcessManager:
         out: List[Dict[str, Any]] = []
         for rec in self.store.list_benchmarks():
             data = asdict(rec)
+            if rec.result_rows:
+                data["summary"] = _summarize_benchmark_rows(rec.result_rows)
             data["alive"] = _record_matches_process(rec.pid, rec.cmdline, rec.pgid) if rec.cmdline else False
             out.append(data)
         return out
@@ -1181,6 +1196,8 @@ class ProcessManager:
         if rec is None:
             return None
         data = asdict(rec)
+        if rec.result_rows:
+            data["summary"] = _summarize_benchmark_rows(rec.result_rows)
         data["alive"] = _record_matches_process(rec.pid, rec.cmdline, rec.pgid) if rec.cmdline else False
         return data
 

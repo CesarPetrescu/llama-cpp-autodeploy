@@ -465,7 +465,7 @@ class ProcessManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(data["status"], "success")
         self.assertEqual(data["summary"]["best_tg"]["avg_ts"], 98.7)
-        self.assertEqual(data["summary"]["best_overall"]["avg_ts"], 1234.5)
+        self.assertEqual(data["summary"]["best_overall"]["avg_ts"], 98.7)
         self.assertEqual(len(data["result_rows"]), 2)
         logs = [line.rstrip() for line in self.pm.get_benchmark_logs(rec.id)]
         self.assertTrue(any("bench-ok" in line for line in logs))
