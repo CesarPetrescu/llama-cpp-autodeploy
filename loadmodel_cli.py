@@ -63,6 +63,32 @@ class LoadModelState(StrictStateMixin):
     n_cpu_moe: str = ""
     cpu_moe: bool = False
     flash_attn: str = "on"
+    spec_type: str = "none"
+    spec_draft_model: str = ""
+    spec_draft_hf: str = ""
+    spec_draft_n_max: str = ""
+    spec_draft_n_min: str = ""
+    spec_draft_p_split: str = ""
+    spec_draft_p_min: str = ""
+    spec_draft_backend_sampling: str = "default"
+    spec_draft_ngl: str = ""
+    spec_draft_device: str = ""
+    spec_draft_type_k: str = ""
+    spec_draft_type_v: str = ""
+    spec_draft_override_tensor: str = ""
+    spec_draft_cpu_moe: bool = False
+    spec_draft_n_cpu_moe: str = ""
+    spec_draft_threads: str = ""
+    spec_draft_threads_batch: str = ""
+    spec_draft_cpu_mask: str = ""
+    spec_draft_cpu_range: str = ""
+    spec_draft_cpu_strict: str = ""
+    spec_draft_prio: str = ""
+    spec_draft_poll: str = ""
+    spec_draft_cpu_mask_batch: str = ""
+    spec_draft_cpu_strict_batch: str = ""
+    spec_draft_prio_batch: str = ""
+    spec_draft_poll_batch: str = ""
     extra_flags: str = ""
     device: str = ""
     device_map: str = "auto"
@@ -968,6 +994,62 @@ def build_command(state: dict) -> List[str]:
             n_cpu_moe = (state.get("n_cpu_moe") or "").strip()
             if n_cpu_moe:
                 cmd += ["--n-cpu-moe", str(parse_int(n_cpu_moe, name="--n-cpu-moe", min_value=0))]
+        spec_type = (state.get("spec_type") or "none").strip()
+        if spec_type == "draft-mtp":
+            if mode != "llm":
+                raise ValueError("MTP speculative decoding is only supported for LLM mode.")
+            if (state.get("spec_draft_model") or "").strip() and (state.get("spec_draft_hf") or "").strip():
+                raise ValueError("Use either --spec-draft-model or --spec-draft-hf, not both.")
+            cmd += ["--spec-type", "draft-mtp"]
+            for key, flag in [
+                ("spec_draft_model", "--spec-draft-model"),
+                ("spec_draft_hf", "--spec-draft-hf"),
+                ("spec_draft_ngl", "--spec-draft-ngl"),
+                ("spec_draft_device", "--spec-draft-device"),
+                ("spec_draft_type_k", "--spec-draft-type-k"),
+                ("spec_draft_type_v", "--spec-draft-type-v"),
+                ("spec_draft_override_tensor", "--spec-draft-override-tensor"),
+                ("spec_draft_cpu_mask", "--spec-draft-cpu-mask"),
+                ("spec_draft_cpu_range", "--spec-draft-cpu-range"),
+                ("spec_draft_cpu_mask_batch", "--spec-draft-cpu-mask-batch"),
+            ]:
+                value = (state.get(key) or "").strip()
+                if value:
+                    cmd += [flag, value]
+            for key, flag in [
+                ("spec_draft_n_max", "--spec-draft-n-max"),
+                ("spec_draft_n_min", "--spec-draft-n-min"),
+                ("spec_draft_n_cpu_moe", "--spec-draft-n-cpu-moe"),
+                ("spec_draft_threads", "--spec-draft-threads"),
+                ("spec_draft_threads_batch", "--spec-draft-threads-batch"),
+                ("spec_draft_cpu_strict", "--spec-draft-cpu-strict"),
+                ("spec_draft_prio", "--spec-draft-prio"),
+                ("spec_draft_poll", "--spec-draft-poll"),
+                ("spec_draft_cpu_strict_batch", "--spec-draft-cpu-strict-batch"),
+                ("spec_draft_prio_batch", "--spec-draft-prio-batch"),
+                ("spec_draft_poll_batch", "--spec-draft-poll-batch"),
+            ]:
+                value = (state.get(key) or "").strip()
+                if value:
+                    cmd += [flag, str(parse_int(value, name=flag))]
+            for key, flag in [
+                ("spec_draft_p_split", "--spec-draft-p-split"),
+                ("spec_draft_p_min", "--spec-draft-p-min"),
+            ]:
+                value = (state.get(key) or "").strip()
+                if value:
+                    try:
+                        parsed = float(value)
+                    except ValueError as exc:
+                        raise ValueError(f"{flag} must be a number") from exc
+                    cmd += [flag, str(parsed)]
+            backend_sampling = (state.get("spec_draft_backend_sampling") or "default").strip()
+            if backend_sampling == "on":
+                cmd.append("--spec-draft-backend-sampling")
+            elif backend_sampling == "off":
+                cmd.append("--spec-draft-backend-sampling=off")
+            if state.get("spec_draft_cpu_moe"):
+                cmd.append("--spec-draft-cpu-moe")
     else:
         device = (state.get("device") or "").strip()
         if device:
@@ -1467,6 +1549,114 @@ def build_options(state: LoadModelState) -> List[OptionBase]:
             visible=lambda st: st.get("mode") in {"llm", "embed"},
         )
     )
+
+    options.append(
+        ChoiceOption(
+            key="spec_type",
+            name="Speculative / MTP",
+            description="Enable first-class MTP speculative decoding. Uses llama.cpp --spec-type draft-mtp.",
+            state=state,
+            choices=[
+                ChoiceItem("none", "Disabled"),
+                ChoiceItem("draft-mtp", "MTP (draft-mtp)"),
+            ],
+            visible=lambda st: st.get("mode") == "llm",
+        )
+    )
+
+    options.append(
+        InputOption(
+            key="spec_draft_model",
+            name="--spec-draft-model",
+            description="Optional MTP draft GGUF path or HF spec. Leave blank when the target GGUF already contains MTP layers.",
+            state=state,
+            placeholder="models/mtp-head.gguf or org/repo:file.gguf",
+            visible=lambda st: st.get("mode") == "llm" and st.get("spec_type") == "draft-mtp",
+        )
+    )
+
+    options.append(
+        InputOption(
+            key="spec_draft_hf",
+            name="--spec-draft-hf",
+            description="Optional HF repo[:quant] for llama.cpp to fetch the MTP draft model directly.",
+            state=state,
+            placeholder="unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-IQ1_M",
+            visible=lambda st: st.get("mode") == "llm" and st.get("spec_type") == "draft-mtp",
+        )
+    )
+
+    for key, name, desc, placeholder in [
+        ("spec_draft_n_max", "--spec-draft-n-max", "Maximum number of tokens to draft.", ""),
+        ("spec_draft_n_min", "--spec-draft-n-min", "Minimum draft length required before using drafted tokens.", ""),
+        ("spec_draft_p_split", "--spec-draft-p-split", "Speculative split probability.", ""),
+        ("spec_draft_p_min", "--spec-draft-p-min", "Minimum draft token probability.", ""),
+        ("spec_draft_ngl", "--spec-draft-ngl", "Draft GPU layers: exact number, auto, or all.", "auto"),
+        ("spec_draft_device", "--spec-draft-device", "Comma-separated devices for the MTP draft context.", ""),
+        ("spec_draft_type_k", "--spec-draft-type-k", "KV cache K type for the draft context.", "f16"),
+        ("spec_draft_type_v", "--spec-draft-type-v", "KV cache V type for the draft context.", "f16"),
+        ("spec_draft_override_tensor", "--spec-draft-override-tensor", "Tensor buffer overrides for the draft context.", ""),
+    ]:
+        options.append(
+            InputOption(
+                key=key,
+                name=name,
+                description=desc,
+                state=state,
+                placeholder=placeholder,
+                visible=lambda st: st.get("mode") == "llm" and st.get("spec_type") == "draft-mtp",
+            )
+        )
+
+    options.append(
+        ChoiceOption(
+            key="spec_draft_backend_sampling",
+            name="Draft backend sampling",
+            description="Control llama.cpp backend offload for draft sampling.",
+            state=state,
+            choices=[
+                ChoiceItem("default", "Default"),
+                ChoiceItem("on", "Enabled"),
+                ChoiceItem("off", "Disabled"),
+            ],
+            visible=lambda st: st.get("mode") == "llm" and st.get("spec_type") == "draft-mtp",
+        )
+    )
+
+    options.append(
+        ToggleOption(
+            key="spec_draft_cpu_moe",
+            name="--spec-draft-cpu-moe",
+            description="Keep all draft MoE weights on CPU.",
+            state=state,
+            visible=lambda st: st.get("mode") == "llm" and st.get("spec_type") == "draft-mtp",
+        )
+    )
+
+    for key, name, desc in [
+        ("spec_draft_n_cpu_moe", "--spec-draft-n-cpu-moe", "Keep the first N draft MoE layers on CPU."),
+        ("spec_draft_threads", "--spec-draft-threads", "Draft generation thread count."),
+        ("spec_draft_threads_batch", "--spec-draft-threads-batch", "Draft batch processing thread count."),
+        ("spec_draft_cpu_mask", "--spec-draft-cpu-mask", "Draft CPU affinity mask."),
+        ("spec_draft_cpu_range", "--spec-draft-cpu-range", "Draft CPU affinity range."),
+        ("spec_draft_cpu_strict", "--spec-draft-cpu-strict", "Strict draft CPU placement: 0 or 1."),
+        ("spec_draft_prio", "--spec-draft-prio", "Draft thread priority: 0..3."),
+        ("spec_draft_poll", "--spec-draft-poll", "Draft polling level."),
+        ("spec_draft_cpu_mask_batch", "--spec-draft-cpu-mask-batch", "Draft batch CPU affinity mask."),
+        ("spec_draft_cpu_strict_batch", "--spec-draft-cpu-strict-batch", "Strict draft batch CPU placement: 0 or 1."),
+        ("spec_draft_prio_batch", "--spec-draft-prio-batch", "Draft batch thread priority: 0..3."),
+        ("spec_draft_poll_batch", "--spec-draft-poll-batch", "Draft batch polling level."),
+    ]:
+        options.append(
+            InputOption(
+                key=key,
+                name=name,
+                description=desc,
+                state=state,
+                placeholder="",
+                visible=lambda st: st.get("mode") == "llm" and st.get("spec_type") == "draft-mtp",
+            )
+        )
 
     options.append(
         InputOption(

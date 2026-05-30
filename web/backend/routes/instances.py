@@ -31,6 +31,32 @@ class InstanceConfig(BaseModel):
     jinja: bool = False
     reasoning_format: Optional[str] = None
     no_context_shift: bool = False
+    spec_type: str = "none"
+    spec_draft_model: Optional[str] = None
+    spec_draft_n_max: Optional[int] = None
+    spec_draft_n_min: Optional[int] = None
+    spec_draft_p_split: Optional[float] = None
+    spec_draft_p_min: Optional[float] = None
+    spec_draft_backend_sampling: Optional[str] = "default"
+    spec_draft_hf: Optional[str] = None
+    spec_draft_ngl: Optional[str] = None
+    spec_draft_device: Optional[str] = None
+    spec_draft_type_k: Optional[str] = None
+    spec_draft_type_v: Optional[str] = None
+    spec_draft_override_tensor: Optional[str] = None
+    spec_draft_cpu_moe: bool = False
+    spec_draft_n_cpu_moe: Optional[int] = None
+    spec_draft_threads: Optional[int] = None
+    spec_draft_threads_batch: Optional[int] = None
+    spec_draft_cpu_mask: Optional[str] = None
+    spec_draft_cpu_range: Optional[str] = None
+    spec_draft_cpu_strict: Optional[int] = None
+    spec_draft_prio: Optional[int] = None
+    spec_draft_poll: Optional[int] = None
+    spec_draft_cpu_mask_batch: Optional[str] = None
+    spec_draft_cpu_strict_batch: Optional[int] = None
+    spec_draft_prio_batch: Optional[int] = None
+    spec_draft_poll_batch: Optional[int] = None
     extra_flags: str = ""
 
 

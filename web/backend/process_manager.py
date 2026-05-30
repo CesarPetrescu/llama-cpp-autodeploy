@@ -38,6 +38,82 @@ RECOVERY_INSTANCE_ID_ENV = "LLAMA_AUTODEPLOY_INSTANCE_ID"
 RECOVERY_INSTANCE_NAME_ENV = "LLAMA_AUTODEPLOY_INSTANCE_NAME"
 RECOVERY_LOG_FILE_ENV = "LLAMA_AUTODEPLOY_LOG_FILE"
 
+SPEC_TYPE_NONE = "none"
+SPEC_TYPE_DRAFT_MTP = "draft-mtp"
+SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT = "default"
+
+SPECULATIVE_VALUE_FLAGS = {
+    "--spec-type",
+    "--spec-draft-model",
+    "-md",
+    "--model-draft",
+    "--spec-draft-hf",
+    "-hfd",
+    "-hfrd",
+    "--hf-repo-draft",
+    "--spec-draft-n-max",
+    "--spec-draft-n-min",
+    "--spec-draft-p-split",
+    "--draft-p-split",
+    "--spec-draft-p-min",
+    "--draft-p-min",
+    "--spec-draft-ngl",
+    "-ngld",
+    "--gpu-layers-draft",
+    "--n-gpu-layers-draft",
+    "--spec-draft-device",
+    "-devd",
+    "--device-draft",
+    "--spec-draft-type-k",
+    "-ctkd",
+    "--cache-type-k-draft",
+    "--spec-draft-type-v",
+    "-ctvd",
+    "--cache-type-v-draft",
+    "--spec-draft-override-tensor",
+    "-otd",
+    "--override-tensor-draft",
+    "--spec-draft-n-cpu-moe",
+    "--spec-draft-ncmoe",
+    "-ncmoed",
+    "--n-cpu-moe-draft",
+    "--spec-draft-threads",
+    "-td",
+    "--threads-draft",
+    "--spec-draft-threads-batch",
+    "-tbd",
+    "--threads-batch-draft",
+    "--spec-draft-cpu-mask",
+    "-Cd",
+    "--cpu-mask-draft",
+    "--spec-draft-cpu-range",
+    "-Crd",
+    "--cpu-range-draft",
+    "--spec-draft-cpu-strict",
+    "--cpu-strict-draft",
+    "--spec-draft-prio",
+    "--prio-draft",
+    "--spec-draft-poll",
+    "--poll-draft",
+    "--spec-draft-cpu-mask-batch",
+    "-Cbd",
+    "--cpu-mask-batch-draft",
+    "--spec-draft-cpu-strict-batch",
+    "--cpu-strict-batch-draft",
+    "--spec-draft-prio-batch",
+    "--prio-batch-draft",
+    "--spec-draft-poll-batch",
+    "--poll-batch-draft",
+}
+SPECULATIVE_BOOL_FLAGS = {
+    "--spec-draft-backend-sampling",
+    "--no-spec-draft-backend-sampling",
+    "--spec-draft-cpu-moe",
+    "-cmoed",
+    "--cpu-moe-draft",
+}
+SPECULATIVE_MANAGED_FLAGS = SPECULATIVE_VALUE_FLAGS | SPECULATIVE_BOOL_FLAGS
+
 
 # ---------------------------------------------------------------------------
 # Command construction
@@ -66,6 +142,135 @@ def _coerce_text(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _spec_type(config: Dict[str, Any]) -> str:
+    value = str(config.get("spec_type") or SPEC_TYPE_NONE).strip().lower()
+    return value or SPEC_TYPE_NONE
+
+
+def _spec_mtp_enabled(config: Dict[str, Any]) -> bool:
+    return _spec_type(config) == SPEC_TYPE_DRAFT_MTP
+
+
+def _flag_name(token: str) -> str:
+    return str(token).split("=", 1)[0]
+
+
+def _find_managed_speculative_flag(extra: List[str]) -> Optional[str]:
+    for token in extra:
+        flag = _flag_name(token)
+        if flag in SPECULATIVE_MANAGED_FLAGS:
+            return flag
+    return None
+
+
+def _append_value_flag(cmd: List[str], flag: str, value: Any) -> None:
+    text = _coerce_text(value)
+    if text is not None:
+        cmd += [flag, text]
+
+
+def _append_int_flag(cmd: List[str], flag: str, value: Any) -> None:
+    parsed = _coerce_int(value)
+    if parsed is not None:
+        cmd += [flag, str(parsed)]
+
+
+def _append_float_flag(cmd: List[str], flag: str, value: Any) -> None:
+    if value is None or value == "":
+        return
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{flag} must be a number")
+    cmd += [flag, str(parsed)]
+
+
+def validate_speculative_config(
+    config: Dict[str, Any],
+    *,
+    mode: str,
+    mmproj: Optional[str],
+    extra: List[str],
+) -> None:
+    spec = _spec_type(config)
+    if spec not in {SPEC_TYPE_NONE, SPEC_TYPE_DRAFT_MTP}:
+        raise ValueError(f"Unsupported speculative type: {spec}")
+    if spec != SPEC_TYPE_DRAFT_MTP:
+        return
+    if mode != "llm":
+        raise ValueError("MTP speculative decoding is only supported for LLM instances.")
+    if mmproj:
+        raise ValueError("MTP speculative decoding is not supported with --mmproj yet.")
+    if _coerce_text(config.get("spec_draft_model")) and _coerce_text(config.get("spec_draft_hf")):
+        raise ValueError("Use either --spec-draft-model or --spec-draft-hf, not both.")
+    duplicate = _find_managed_speculative_flag(extra)
+    if duplicate:
+        raise ValueError(
+            f"{duplicate} is managed by the MTP settings. Remove it from extra_flags."
+        )
+
+
+def append_speculative_flags(cmd: List[str], config: Dict[str, Any]) -> None:
+    if not _spec_mtp_enabled(config):
+        return
+
+    cmd += ["--spec-type", SPEC_TYPE_DRAFT_MTP]
+    _append_value_flag(cmd, "--spec-draft-model", config.get("spec_draft_model"))
+    _append_value_flag(cmd, "--spec-draft-hf", config.get("spec_draft_hf"))
+    _append_int_flag(cmd, "--spec-draft-n-max", config.get("spec_draft_n_max"))
+    _append_int_flag(cmd, "--spec-draft-n-min", config.get("spec_draft_n_min"))
+    _append_float_flag(cmd, "--spec-draft-p-split", config.get("spec_draft_p_split"))
+    _append_float_flag(cmd, "--spec-draft-p-min", config.get("spec_draft_p_min"))
+    _append_value_flag(cmd, "--spec-draft-ngl", config.get("spec_draft_ngl"))
+    _append_value_flag(cmd, "--spec-draft-device", config.get("spec_draft_device"))
+    _append_value_flag(cmd, "--spec-draft-type-k", config.get("spec_draft_type_k"))
+    _append_value_flag(cmd, "--spec-draft-type-v", config.get("spec_draft_type_v"))
+    _append_value_flag(cmd, "--spec-draft-override-tensor", config.get("spec_draft_override_tensor"))
+
+    backend_sampling = str(
+        config.get("spec_draft_backend_sampling") or SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT
+    ).strip().lower()
+    if backend_sampling == "on":
+        cmd.append("--spec-draft-backend-sampling")
+    elif backend_sampling == "off":
+        cmd.append("--no-spec-draft-backend-sampling")
+    elif backend_sampling not in {"", SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT}:
+        raise ValueError("spec_draft_backend_sampling must be one of default, on, off.")
+
+    if _coerce_bool(config.get("spec_draft_cpu_moe")):
+        cmd.append("--spec-draft-cpu-moe")
+    else:
+        _append_int_flag(cmd, "--spec-draft-n-cpu-moe", config.get("spec_draft_n_cpu_moe"))
+
+    _append_int_flag(cmd, "--spec-draft-threads", config.get("spec_draft_threads"))
+    _append_int_flag(cmd, "--spec-draft-threads-batch", config.get("spec_draft_threads_batch"))
+    _append_value_flag(cmd, "--spec-draft-cpu-mask", config.get("spec_draft_cpu_mask"))
+    _append_value_flag(cmd, "--spec-draft-cpu-range", config.get("spec_draft_cpu_range"))
+    _append_int_flag(cmd, "--spec-draft-cpu-strict", config.get("spec_draft_cpu_strict"))
+    _append_int_flag(cmd, "--spec-draft-prio", config.get("spec_draft_prio"))
+    _append_int_flag(cmd, "--spec-draft-poll", config.get("spec_draft_poll"))
+    _append_value_flag(cmd, "--spec-draft-cpu-mask-batch", config.get("spec_draft_cpu_mask_batch"))
+    _append_int_flag(cmd, "--spec-draft-cpu-strict-batch", config.get("spec_draft_cpu_strict_batch"))
+    _append_int_flag(cmd, "--spec-draft-prio-batch", config.get("spec_draft_prio_batch"))
+    _append_int_flag(cmd, "--spec-draft-poll-batch", config.get("spec_draft_poll_batch"))
+
+
+def ensure_mtp_flags_available(config: Dict[str, Any]) -> None:
+    if not _spec_mtp_enabled(config):
+        return
+    if not LLAMA_SERVER.exists():
+        raise RuntimeError("llama-server not found. Rebuild llama.cpp before enabling MTP.")
+    try:
+        help_out = loadmodel.run_capture([str(LLAMA_SERVER), "--help"])
+    except Exception as exc:
+        raise RuntimeError(f"Failed to inspect llama-server for MTP support: {exc}") from exc
+    if "--spec-type" not in help_out or SPEC_TYPE_DRAFT_MTP not in help_out:
+        raise RuntimeError(
+            "This llama-server build does not support --spec-type draft-mtp. "
+            "Rebuild llama.cpp from a recent upstream commit."
+        )
 
 
 def _resolve_gpu_device_selection(config: Dict[str, Any]) -> Any:
@@ -127,6 +332,14 @@ def build_llama_server_cmd(config: Dict[str, Any], model_path: Path) -> List[str
     jinja = _coerce_bool(config.get("jinja"))
     reasoning_format = (str(config.get("reasoning_format") or "")).strip() or None
     no_context_shift = _coerce_bool(config.get("no_context_shift"))
+    mode = str(config.get("mode") or "llm").lower()
+    extra_raw = config.get("extra_flags") or ""
+    if isinstance(extra_raw, list):
+        extra: List[str] = [str(x) for x in extra_raw]
+    else:
+        extra = shlex.split(str(extra_raw))
+
+    validate_speculative_config(config, mode=mode, mmproj=mmproj, extra=extra)
 
     cmd: List[str] = [
         str(LLAMA_SERVER),
@@ -161,14 +374,8 @@ def build_llama_server_cmd(config: Dict[str, Any], model_path: Path) -> List[str
         cmd += ["--reasoning-format", reasoning_format]
     if no_context_shift:
         cmd.append("--no-context-shift")
+    append_speculative_flags(cmd, config)
 
-    mode = str(config.get("mode") or "llm").lower()
-    extra_raw = config.get("extra_flags") or ""
-    if isinstance(extra_raw, list):
-        extra: List[str] = [str(x) for x in extra_raw]
-    else:
-        import shlex
-        extra = shlex.split(str(extra_raw))
     if mode == "embed" and "--embeddings" not in extra:
         extra = ["--embeddings"] + extra
     if "--flash-attn" not in extra and "-fa" not in extra:
@@ -432,6 +639,119 @@ def _parse_recovered_llama_config(cmdline: List[str], env: Dict[str, str]) -> Di
             config["no_context_shift"] = True
             i += 1
             continue
+        if tok == "--spec-type" and next_tok is not None:
+            config["spec_type"] = next_tok
+            i += 2
+            continue
+        if tok in ("--spec-draft-model", "-md", "--model-draft") and next_tok is not None:
+            config["spec_draft_model"] = next_tok
+            i += 2
+            continue
+        if tok in ("--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft") and next_tok is not None:
+            config["spec_draft_hf"] = next_tok
+            i += 2
+            continue
+        if tok == "--spec-draft-n-max" and next_tok is not None:
+            parsed = _coerce_int(next_tok)
+            if parsed is not None:
+                config["spec_draft_n_max"] = parsed
+                i += 2
+                continue
+        if tok == "--spec-draft-n-min" and next_tok is not None:
+            parsed = _coerce_int(next_tok)
+            if parsed is not None:
+                config["spec_draft_n_min"] = parsed
+                i += 2
+                continue
+        if tok in ("--spec-draft-p-split", "--draft-p-split") and next_tok is not None:
+            with suppress(ValueError):
+                config["spec_draft_p_split"] = float(next_tok)
+                i += 2
+                continue
+        if tok in ("--spec-draft-p-min", "--draft-p-min") and next_tok is not None:
+            with suppress(ValueError):
+                config["spec_draft_p_min"] = float(next_tok)
+                i += 2
+                continue
+        if tok == "--spec-draft-backend-sampling":
+            config["spec_draft_backend_sampling"] = "on"
+            i += 1
+            continue
+        if tok == "--no-spec-draft-backend-sampling":
+            config["spec_draft_backend_sampling"] = "off"
+            i += 1
+            continue
+        if tok in ("--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft") and next_tok is not None:
+            config["spec_draft_ngl"] = next_tok
+            i += 2
+            continue
+        if tok in ("--spec-draft-device", "-devd", "--device-draft") and next_tok is not None:
+            config["spec_draft_device"] = next_tok
+            i += 2
+            continue
+        if tok in ("--spec-draft-type-k", "-ctkd", "--cache-type-k-draft") and next_tok is not None:
+            config["spec_draft_type_k"] = next_tok
+            i += 2
+            continue
+        if tok in ("--spec-draft-type-v", "-ctvd", "--cache-type-v-draft") and next_tok is not None:
+            config["spec_draft_type_v"] = next_tok
+            i += 2
+            continue
+        if tok in ("--spec-draft-override-tensor", "-otd", "--override-tensor-draft") and next_tok is not None:
+            config["spec_draft_override_tensor"] = next_tok
+            i += 2
+            continue
+        if tok in ("--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft"):
+            config["spec_draft_cpu_moe"] = True
+            i += 1
+            continue
+        if tok in ("--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft") and next_tok is not None:
+            parsed = _coerce_int(next_tok)
+            if parsed is not None:
+                config["spec_draft_n_cpu_moe"] = parsed
+                i += 2
+                continue
+        spec_int_flags = {
+            "--spec-draft-threads": "spec_draft_threads",
+            "-td": "spec_draft_threads",
+            "--threads-draft": "spec_draft_threads",
+            "--spec-draft-threads-batch": "spec_draft_threads_batch",
+            "-tbd": "spec_draft_threads_batch",
+            "--threads-batch-draft": "spec_draft_threads_batch",
+            "--spec-draft-cpu-strict": "spec_draft_cpu_strict",
+            "--cpu-strict-draft": "spec_draft_cpu_strict",
+            "--spec-draft-prio": "spec_draft_prio",
+            "--prio-draft": "spec_draft_prio",
+            "--spec-draft-poll": "spec_draft_poll",
+            "--poll-draft": "spec_draft_poll",
+            "--spec-draft-cpu-strict-batch": "spec_draft_cpu_strict_batch",
+            "--cpu-strict-batch-draft": "spec_draft_cpu_strict_batch",
+            "--spec-draft-prio-batch": "spec_draft_prio_batch",
+            "--prio-batch-draft": "spec_draft_prio_batch",
+            "--spec-draft-poll-batch": "spec_draft_poll_batch",
+            "--poll-batch-draft": "spec_draft_poll_batch",
+        }
+        if tok in spec_int_flags and next_tok is not None:
+            parsed = _coerce_int(next_tok)
+            if parsed is not None:
+                config[spec_int_flags[tok]] = parsed
+                i += 2
+                continue
+        spec_text_flags = {
+            "--spec-draft-cpu-mask": "spec_draft_cpu_mask",
+            "-Cd": "spec_draft_cpu_mask",
+            "--cpu-mask-draft": "spec_draft_cpu_mask",
+            "--spec-draft-cpu-range": "spec_draft_cpu_range",
+            "-Crd": "spec_draft_cpu_range",
+            "--cpu-range-draft": "spec_draft_cpu_range",
+            "--spec-draft-cpu-mask-batch": "spec_draft_cpu_mask_batch",
+            "-Cbd": "spec_draft_cpu_mask_batch",
+            "--cpu-mask-batch-draft": "spec_draft_cpu_mask_batch",
+        }
+        if tok in spec_text_flags and next_tok is not None:
+            config[spec_text_flags[tok]] = next_tok
+            i += 2
+            continue
 
         extra.append(tok)
         i += 1
@@ -469,6 +789,9 @@ def _merge_recovered_config(existing: Dict[str, Any], discovered: Dict[str, Any]
     merged.setdefault("cpu_moe", False)
     merged.setdefault("jinja", False)
     merged.setdefault("no_context_shift", False)
+    merged.setdefault("spec_type", SPEC_TYPE_NONE)
+    merged.setdefault("spec_draft_backend_sampling", SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT)
+    merged.setdefault("spec_draft_cpu_moe", False)
     merged.setdefault("extra_flags", "")
     return merged
 
@@ -985,8 +1308,20 @@ class ProcessManager:
                 loadmodel.ensure_moe_flags_available(wants_moe)
             except SystemExit as exc:
                 raise RuntimeError(str(exc)) from exc
+            ensure_mtp_flags_available(config)
 
-            cmd = build_llama_server_cmd(config, model_path)
+            command_config = dict(config)
+            spec_draft_model = _coerce_text(command_config.get("spec_draft_model"))
+            if _spec_mtp_enabled(command_config) and spec_draft_model:
+                try:
+                    draft_path: Path = await loop.run_in_executor(
+                        None, loadmodel.resolve_gguf, spec_draft_model, models_dir, hf_token
+                    )
+                    command_config["spec_draft_model"] = str(draft_path)
+                except SystemExit as exc:
+                    raise RuntimeError(f"Failed to resolve MTP draft model: {exc}") from exc
+
+            cmd = build_llama_server_cmd(command_config, model_path)
             inst.record.cmdline = cmd
             inst.record.status = "running"
             inst.record.last_exit = None

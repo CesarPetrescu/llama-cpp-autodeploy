@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -19,6 +20,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from web.backend import config as cfg_mod, process_manager, state as state_mod  # noqa: E402
 from web.backend.log_buffer import LogBuffer, read_log_tail  # noqa: E402
+import loadmodel  # noqa: E402
+import loadmodel_cli  # noqa: E402
 
 try:
     from web.backend import main as main_mod  # noqa: E402
@@ -32,12 +35,14 @@ try:
     from web.backend import auth  # noqa: E402
     from web.backend.routes import builds as builds_route  # noqa: E402
     from web.backend.routes import memory as memory_route  # noqa: E402
+    from web.backend.routes import models as models_route  # noqa: E402
     FASTAPI_OK = True
 except Exception:  # pragma: no cover - optional outside the project venv
     TestClient = None  # type: ignore[assignment]
     auth = None  # type: ignore[assignment]
     builds_route = None  # type: ignore[assignment]
     memory_route = None  # type: ignore[assignment]
+    models_route = None  # type: ignore[assignment]
     FASTAPI_OK = False
 
 
@@ -177,6 +182,123 @@ class StateStoreTests(unittest.TestCase):
         self.assertIsNone(store.get_instance("abc"))
 
 
+class LoadModelMtpTests(unittest.TestCase):
+    def test_build_speculative_extra_resolves_draft_model_and_flags(self):
+        args = types.SimpleNamespace(
+            spec_type="draft-mtp",
+            spec_draft_model="org/repo:mtp.gguf",
+            spec_draft_n_max=4,
+            spec_draft_n_min=None,
+            spec_draft_p_split=None,
+            spec_draft_p_min=0.25,
+            spec_draft_backend_sampling="on",
+            spec_draft_ngl="auto",
+            spec_draft_device="0",
+            spec_draft_type_k="q8_0",
+            spec_draft_type_v=None,
+            spec_draft_override_tensor=None,
+            spec_draft_cpu_moe=False,
+            spec_draft_n_cpu_moe=3,
+        )
+
+        with mock.patch("loadmodel.resolve_gguf", return_value=Path("/models/mtp.gguf")) as resolve:
+            extra = loadmodel.build_speculative_extra(args, Path("/models"), "tok")
+
+        resolve.assert_called_once_with("org/repo:mtp.gguf", Path("/models"), "tok")
+        self.assertEqual(extra[0:2], ["--spec-type", "draft-mtp"])
+        self.assertEqual(extra[extra.index("--spec-draft-model") + 1], "/models/mtp.gguf")
+        self.assertEqual(extra[extra.index("--spec-draft-n-max") + 1], "4")
+        self.assertEqual(extra[extra.index("--spec-draft-p-min") + 1], "0.25")
+        self.assertIn("--spec-draft-backend-sampling", extra)
+        self.assertEqual(extra[extra.index("--spec-draft-ngl") + 1], "auto")
+        self.assertEqual(extra[extra.index("--spec-draft-device") + 1], "0")
+        self.assertEqual(extra[extra.index("--spec-draft-type-k") + 1], "q8_0")
+        self.assertEqual(extra[extra.index("--spec-draft-n-cpu-moe") + 1], "3")
+
+    def test_validate_speculative_extra_rejects_duplicate_managed_flags(self):
+        with self.assertRaises(SystemExit):
+            loadmodel.validate_speculative_extra(
+                types.SimpleNamespace(spec_type="draft-mtp", extra=["--spec-draft-n-max", "4"])
+            )
+
+    def test_build_speculative_extra_supports_draft_hf(self):
+        extra = loadmodel.build_speculative_extra(
+            types.SimpleNamespace(
+                spec_type="draft-mtp",
+                spec_draft_model="",
+                spec_draft_hf="unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-IQ1_M",
+                spec_draft_backend_sampling="default",
+                spec_draft_cpu_moe=False,
+            ),
+            Path("/models"),
+            None,
+        )
+
+        self.assertEqual(
+            extra[extra.index("--spec-draft-hf") + 1],
+            "unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-IQ1_M",
+        )
+
+    def test_ensure_mtp_flags_available_fails_on_old_binary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_server = Path(tmp) / "llama-server"
+            fake_server.write_text("#!/bin/sh\n", encoding="utf-8")
+            fake_server.chmod(0o755)
+
+            with mock.patch.object(loadmodel, "LLAMA_SERVER", fake_server), \
+                 mock.patch("loadmodel.run_capture", return_value="--spec-type none\n"):
+                with self.assertRaises(SystemExit):
+                    loadmodel.ensure_mtp_flags_available(True)
+
+    def test_loadmodel_cli_builds_mtp_command(self):
+        cmd = loadmodel_cli.build_command(
+            {
+                "mode": "llm",
+                "model_ref": "/models/main.gguf",
+                "spec_type": "draft-mtp",
+                "spec_draft_model": "/models/mtp.gguf",
+                "spec_draft_n_max": "4",
+                "spec_draft_p_min": "0.25",
+                "spec_draft_backend_sampling": "off",
+                "spec_draft_cpu_moe": True,
+                "flash_attn": "auto",
+                "extra_flags": "",
+            }
+        )
+
+        self.assertEqual(cmd[cmd.index("--spec-type") + 1], "draft-mtp")
+        self.assertEqual(cmd[cmd.index("--spec-draft-model") + 1], "/models/mtp.gguf")
+        self.assertEqual(cmd[cmd.index("--spec-draft-n-max") + 1], "4")
+        self.assertEqual(cmd[cmd.index("--spec-draft-p-min") + 1], "0.25")
+        self.assertIn("--spec-draft-backend-sampling=off", cmd)
+        self.assertIn("--spec-draft-cpu-moe", cmd)
+
+    def test_loadmodel_cli_rejects_mtp_for_embeddings(self):
+        with self.assertRaisesRegex(ValueError, "only supported for LLM"):
+            loadmodel_cli.build_command(
+                {
+                    "mode": "embed",
+                    "model_ref": "/models/embed.gguf",
+                    "spec_type": "draft-mtp",
+                    "flash_attn": "auto",
+                    "extra_flags": "",
+                }
+            )
+
+        with self.assertRaisesRegex(ValueError, "either --spec-draft-model or --spec-draft-hf"):
+            loadmodel_cli.build_command(
+                {
+                    "mode": "llm",
+                    "model_ref": "/models/main.gguf",
+                    "spec_type": "draft-mtp",
+                    "spec_draft_model": "/models/mtp.gguf",
+                    "spec_draft_hf": "org/repo:mtp",
+                    "flash_attn": "auto",
+                    "extra_flags": "",
+                }
+            )
+
+
 class ProcessManagerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -227,6 +349,50 @@ class ProcessManagerTests(unittest.IsolatedAsyncioTestCase):
             )
         split_idx = cmd.index("--tensor-split")
         self.assertEqual(cmd[split_idx + 1], "50,50")
+
+    def test_build_llama_server_cmd_adds_structured_mtp_flags(self):
+        cmd = process_manager.build_llama_server_cmd(
+            {
+                "model_ref": "/tmp/fake.gguf",
+                "gpu_strategy": "cpu",
+                "spec_type": "draft-mtp",
+                "spec_draft_model": "/tmp/mtp.gguf",
+                "spec_draft_n_max": 2,
+                "spec_draft_p_min": 0.25,
+                "spec_draft_backend_sampling": "off",
+                "spec_draft_type_k": "q8_0",
+                "spec_draft_cpu_moe": True,
+            },
+            Path("/tmp/fake.gguf"),
+        )
+
+        self.assertIn("--spec-type", cmd)
+        self.assertEqual(cmd[cmd.index("--spec-type") + 1], "draft-mtp")
+        self.assertEqual(cmd[cmd.index("--spec-draft-model") + 1], "/tmp/mtp.gguf")
+        self.assertEqual(cmd[cmd.index("--spec-draft-n-max") + 1], "2")
+        self.assertEqual(cmd[cmd.index("--spec-draft-p-min") + 1], "0.25")
+        self.assertIn("--no-spec-draft-backend-sampling", cmd)
+        self.assertEqual(cmd[cmd.index("--spec-draft-type-k") + 1], "q8_0")
+        self.assertIn("--spec-draft-cpu-moe", cmd)
+
+    def test_build_llama_server_cmd_rejects_mtp_conflicts(self):
+        base = {
+            "model_ref": "/tmp/fake.gguf",
+            "gpu_strategy": "cpu",
+            "spec_type": "draft-mtp",
+        }
+
+        with self.assertRaisesRegex(ValueError, "only supported for LLM"):
+            process_manager.build_llama_server_cmd({**base, "mode": "embed"}, Path("/tmp/fake.gguf"))
+        with self.assertRaisesRegex(ValueError, "not supported with --mmproj"):
+            process_manager.build_llama_server_cmd({**base, "mmproj": "/tmp/mmproj.gguf"}, Path("/tmp/fake.gguf"))
+        with self.assertRaisesRegex(ValueError, "managed by the MTP settings"):
+            process_manager.build_llama_server_cmd({**base, "extra_flags": "--spec-type draft-mtp"}, Path("/tmp/fake.gguf"))
+        with self.assertRaisesRegex(ValueError, "either --spec-draft-model or --spec-draft-hf"):
+            process_manager.build_llama_server_cmd(
+                {**base, "spec_draft_model": "/tmp/mtp.gguf", "spec_draft_hf": "org/repo:mtp"},
+                Path("/tmp/fake.gguf"),
+            )
 
     def test_build_cuda_visible_devices_prefers_gpu_uuid(self):
         gpus = [
@@ -372,6 +538,45 @@ class ProcessManagerTests(unittest.IsolatedAsyncioTestCase):
         await self.pm.stop_instance(recovered["id"])
         proc.wait(timeout=2)
         self.assertIsNotNone(proc.returncode)
+
+    async def test_startup_recovers_structured_mtp_flags(self):
+        fake_server = _write_fake_llama_server(self.root)
+        proc = subprocess.Popen(
+            [
+                str(fake_server),
+                "--model",
+                "/tmp/fake.gguf",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "45567",
+                "--spec-type",
+                "draft-mtp",
+                "--spec-draft-model",
+                "/tmp/mtp.gguf",
+                "--spec-draft-hf",
+                "org/repo:mtp",
+                "--spec-draft-n-max",
+                "2",
+                "--no-spec-draft-backend-sampling",
+            ],
+            start_new_session=True,
+        )
+        self._pids_to_cleanup.append(proc.pid)
+        await asyncio.sleep(0.4)
+
+        with mock.patch.object(process_manager, "LLAMA_SERVER", fake_server):
+            await self.pm.startup()
+
+        recovered = next(inst for inst in self.pm.list_instances() if inst["pid"] == proc.pid)
+        self.assertEqual(recovered["config"]["spec_type"], "draft-mtp")
+        self.assertEqual(recovered["config"]["spec_draft_model"], "/tmp/mtp.gguf")
+        self.assertEqual(recovered["config"]["spec_draft_hf"], "org/repo:mtp")
+        self.assertEqual(recovered["config"]["spec_draft_n_max"], 2)
+        self.assertEqual(recovered["config"]["spec_draft_backend_sampling"], "off")
+
+        await self.pm.stop_instance(recovered["id"])
+        proc.wait(timeout=2)
 
     async def test_running_build_without_identity_becomes_failure_on_startup(self):
         rec = state_mod.BuildRecord(
@@ -559,6 +764,32 @@ class RouteTests(unittest.TestCase):
         r = self.client.get("/api/health")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["status"], "ok")
+
+    def test_binary_caps_reports_mtp_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = Path(tmp)
+            fake_server = fake_root / "bin" / "llama-server"
+            fake_server.parent.mkdir(parents=True, exist_ok=True)
+            fake_server.write_text("#!/bin/sh\n", encoding="utf-8")
+            fake_server.chmod(0o755)
+            help_text = (
+                "--ubatch --n-ubatch --cpu-moe --n-cpu-moe --flash-attn "
+                "--spec-type none draft-mtp --spec-draft-model --spec-draft-n-max "
+                "--spec-draft-hf --no-spec-draft-backend-sampling"
+            )
+
+            with mock.patch.object(cfg_mod, "REPO_ROOT", fake_root), \
+                 mock.patch("loadmodel.detect_ubatch_flag", return_value=("--ubatch", "--n-ubatch")), \
+                 mock.patch("loadmodel.run_capture", return_value=help_text):
+                r = self.client.get("/api/models/binary-caps", headers=self._hdr())
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["has_spec_type"])
+        self.assertTrue(body["has_draft_mtp"])
+        self.assertIn("--spec-draft-model", body["spec_draft_flags"])
+        self.assertIn("--spec-draft-hf", body["spec_draft_flags"])
+        self.assertIn("--no-spec-draft-backend-sampling", body["spec_draft_flags"])
 
     def test_recover_route_adopts_orphan_with_backend_marker(self):
         self.client.get("/api/health")

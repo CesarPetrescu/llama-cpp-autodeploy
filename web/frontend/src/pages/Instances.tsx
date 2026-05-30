@@ -28,6 +28,32 @@ const DEFAULT_CONFIG: InstanceConfig = {
   jinja: false,
   reasoning_format: "",
   no_context_shift: false,
+  spec_type: "none",
+  spec_draft_model: "",
+  spec_draft_n_max: null,
+  spec_draft_n_min: null,
+  spec_draft_p_split: null,
+  spec_draft_p_min: null,
+  spec_draft_backend_sampling: "default",
+  spec_draft_hf: "",
+  spec_draft_ngl: "",
+  spec_draft_device: "",
+  spec_draft_type_k: "",
+  spec_draft_type_v: "",
+  spec_draft_override_tensor: "",
+  spec_draft_cpu_moe: false,
+  spec_draft_n_cpu_moe: null,
+  spec_draft_threads: null,
+  spec_draft_threads_batch: null,
+  spec_draft_cpu_mask: "",
+  spec_draft_cpu_range: "",
+  spec_draft_cpu_strict: null,
+  spec_draft_prio: null,
+  spec_draft_poll: null,
+  spec_draft_cpu_mask_batch: "",
+  spec_draft_cpu_strict_batch: null,
+  spec_draft_prio_batch: null,
+  spec_draft_poll_batch: null,
   extra_flags: "",
 };
 
@@ -53,6 +79,8 @@ const SPLIT_MODE_OPTIONS = [
   { value: "row", label: "Row split" },
   { value: "none", label: "No split" },
 ];
+
+const SPEC_DRAFT_CACHE_TYPES = ["", "f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"];
 
 function formatUptime(seconds: number | null): string {
   if (!seconds || seconds < 0) return "—";
@@ -278,7 +306,14 @@ export default function Instances() {
     refetchInterval: 4000,
   });
 
+  const binaryCaps = useQuery({
+    queryKey: ["binary-caps"],
+    queryFn: api.binaryCaps,
+  });
+
   const gpus = gpuQuery.data?.gpus ?? [];
+  const mtpEnabled = config.spec_type === "draft-mtp";
+  const mtpSupported = binaryCaps.data?.has_draft_mtp ?? false;
   const selectedGpuIndices = parseGpuSelection(config.gpu_devices, gpus);
   const selectedGpus = gpus.filter((gpu) => selectedGpuIndices.includes(gpu.index));
   const tensorSplitAuto = (config.tensor_split ?? "").trim().toLowerCase() === "auto";
@@ -342,6 +377,20 @@ export default function Instances() {
 
   function upd<K extends keyof InstanceConfig>(k: K, v: InstanceConfig[K]) {
     setConfig((current) => ({ ...current, [k]: v }));
+  }
+
+  function updTextKey(k: keyof InstanceConfig, value: string) {
+    setConfig((current) => ({ ...current, [k]: value }));
+  }
+
+  function updOptionalInt<K extends keyof InstanceConfig>(k: K, raw: string) {
+    const parsed = raw.trim() === "" ? null : Number.parseInt(raw, 10);
+    upd(k, (Number.isFinite(parsed) ? parsed : null) as InstanceConfig[K]);
+  }
+
+  function updOptionalFloat<K extends keyof InstanceConfig>(k: K, raw: string) {
+    const parsed = raw.trim() === "" ? null : Number.parseFloat(raw);
+    upd(k, (Number.isFinite(parsed) ? parsed : null) as InstanceConfig[K]);
   }
 
   function setGpuSelection(indices: number[]) {
@@ -698,6 +747,207 @@ export default function Instances() {
                     )}
                   </div>
                 )}
+
+                <div className="brand-surface-muted p-4">
+                  <div className="brand-label">Speculative / MTP</div>
+                  <div className="mt-4 grid gap-4">
+                    {binaryCaps.isSuccess && !mtpSupported && (
+                      <div className="rounded-none border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-sm text-amber-100">
+                        Current llama-server does not expose <code>draft-mtp</code>. Rebuild from a recent upstream commit before launching MTP.
+                      </div>
+                    )}
+                    <Field label="Mode">
+                      <select
+                        value={config.spec_type ?? "none"}
+                        onChange={(e) => upd("spec_type", e.target.value as "none" | "draft-mtp")}
+                        className="brand-input"
+                      >
+                        <option value="none">Disabled</option>
+                        <option value="draft-mtp" disabled={binaryCaps.isSuccess && !mtpSupported}>
+                          MTP (draft-mtp)
+                        </option>
+                      </select>
+                    </Field>
+
+                    {mtpEnabled && (
+                      <>
+                        <Field label="--spec-draft-model">
+                          <input
+                            value={config.spec_draft_model ?? ""}
+                            onChange={(e) => upd("spec_draft_model", e.target.value)}
+                            className="brand-input"
+                            placeholder="Optional path or HF spec for an MTP GGUF"
+                          />
+                        </Field>
+                        <Field label="--spec-draft-hf">
+                          <input
+                            value={config.spec_draft_hf ?? ""}
+                            onChange={(e) => upd("spec_draft_hf", e.target.value)}
+                            className="brand-input"
+                            placeholder="unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-IQ1_M"
+                          />
+                        </Field>
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <Field label="--spec-draft-n-max">
+                            <input
+                              type="number"
+                              value={config.spec_draft_n_max ?? ""}
+                              onChange={(e) => updOptionalInt("spec_draft_n_max", e.target.value)}
+                              className="brand-input"
+                              placeholder="llama default"
+                            />
+                          </Field>
+                          <Field label="--spec-draft-n-min">
+                            <input
+                              type="number"
+                              value={config.spec_draft_n_min ?? ""}
+                              onChange={(e) => updOptionalInt("spec_draft_n_min", e.target.value)}
+                              className="brand-input"
+                              placeholder="llama default"
+                            />
+                          </Field>
+                          <Field label="--spec-draft-p-min">
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={config.spec_draft_p_min ?? ""}
+                              onChange={(e) => updOptionalFloat("spec_draft_p_min", e.target.value)}
+                              className="brand-input"
+                              placeholder="llama default"
+                            />
+                          </Field>
+                          <Field label="Backend sampling">
+                            <select
+                              value={config.spec_draft_backend_sampling ?? "default"}
+                              onChange={(e) => upd("spec_draft_backend_sampling", e.target.value as "default" | "on" | "off")}
+                              className="brand-input"
+                            >
+                              <option value="default">Default</option>
+                              <option value="on">On</option>
+                              <option value="off">Off</option>
+                            </select>
+                          </Field>
+                        </div>
+
+                        <details className="rounded-none border border-white/10 bg-ink-400/60 p-3">
+                          <summary className="cursor-pointer text-sm font-semibold text-bone-100">
+                            Advanced MTP parameters
+                          </summary>
+                          <div className="mt-4 grid gap-3 md:grid-cols-2">
+                            <Field label="--spec-draft-p-split">
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={config.spec_draft_p_split ?? ""}
+                                onChange={(e) => updOptionalFloat("spec_draft_p_split", e.target.value)}
+                                className="brand-input"
+                              />
+                            </Field>
+                            <Field label="--spec-draft-ngl">
+                              <input
+                                value={config.spec_draft_ngl ?? ""}
+                                onChange={(e) => upd("spec_draft_ngl", e.target.value)}
+                                className="brand-input"
+                                placeholder="auto, all, or number"
+                              />
+                            </Field>
+                            <Field label="--spec-draft-device">
+                              <input
+                                value={config.spec_draft_device ?? ""}
+                                onChange={(e) => upd("spec_draft_device", e.target.value)}
+                                className="brand-input"
+                                placeholder="0,1"
+                              />
+                            </Field>
+                            <Field label="--spec-draft-type-k">
+                              <select
+                                value={config.spec_draft_type_k ?? ""}
+                                onChange={(e) => upd("spec_draft_type_k", e.target.value)}
+                                className="brand-input"
+                              >
+                                {SPEC_DRAFT_CACHE_TYPES.map((value) => (
+                                  <option key={value || "default"} value={value}>
+                                    {value || "Default"}
+                                  </option>
+                                ))}
+                              </select>
+                            </Field>
+                            <Field label="--spec-draft-type-v">
+                              <select
+                                value={config.spec_draft_type_v ?? ""}
+                                onChange={(e) => upd("spec_draft_type_v", e.target.value)}
+                                className="brand-input"
+                              >
+                                {SPEC_DRAFT_CACHE_TYPES.map((value) => (
+                                  <option key={value || "default"} value={value}>
+                                    {value || "Default"}
+                                  </option>
+                                ))}
+                              </select>
+                            </Field>
+                            <Field label="--spec-draft-override-tensor">
+                              <input
+                                value={config.spec_draft_override_tensor ?? ""}
+                                onChange={(e) => upd("spec_draft_override_tensor", e.target.value)}
+                                className="brand-input"
+                                placeholder="pattern=CPU"
+                              />
+                            </Field>
+                          </div>
+
+                          <div className="mt-4 grid gap-3 text-sm text-bone-200">
+                            <label className="flex items-center gap-3">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(config.spec_draft_cpu_moe)}
+                                onChange={(e) => upd("spec_draft_cpu_moe", e.target.checked)}
+                                className="h-4 w-4 rounded border-white/20 bg-ink-400 text-lime-300 accent-lime-300"
+                              />
+                              Keep all draft MoE weights on CPU
+                            </label>
+                          </div>
+
+                          <div className="mt-4 grid gap-3 md:grid-cols-2">
+                            {[
+                              ["spec_draft_n_cpu_moe", "--spec-draft-n-cpu-moe"],
+                              ["spec_draft_threads", "--spec-draft-threads"],
+                              ["spec_draft_threads_batch", "--spec-draft-threads-batch"],
+                              ["spec_draft_cpu_strict", "--spec-draft-cpu-strict"],
+                              ["spec_draft_prio", "--spec-draft-prio"],
+                              ["spec_draft_poll", "--spec-draft-poll"],
+                              ["spec_draft_cpu_strict_batch", "--spec-draft-cpu-strict-batch"],
+                              ["spec_draft_prio_batch", "--spec-draft-prio-batch"],
+                              ["spec_draft_poll_batch", "--spec-draft-poll-batch"],
+                            ].map(([key, label]) => (
+                              <Field key={key} label={label}>
+                                <input
+                                  type="number"
+                                  value={(config[key as keyof InstanceConfig] as number | null | undefined) ?? ""}
+                                  onChange={(e) => updOptionalInt(key as keyof InstanceConfig, e.target.value)}
+                                  className="brand-input"
+                                />
+                              </Field>
+                            ))}
+                            {[
+                              ["spec_draft_cpu_mask", "--spec-draft-cpu-mask"],
+                              ["spec_draft_cpu_range", "--spec-draft-cpu-range"],
+                              ["spec_draft_cpu_mask_batch", "--spec-draft-cpu-mask-batch"],
+                            ].map(([key, label]) => (
+                              <Field key={key} label={label}>
+                                <input
+                                  value={(config[key as keyof InstanceConfig] as string | null | undefined) ?? ""}
+                                  onChange={(e) => updTextKey(key as keyof InstanceConfig, e.target.value)}
+                                  className="brand-input"
+                                />
+                              </Field>
+                            ))}
+                          </div>
+                        </details>
+                      </>
+                    )}
+                  </div>
+                </div>
 
                 <div className="brand-surface-muted p-4">
                   <div className="brand-label">Launch toggles</div>
