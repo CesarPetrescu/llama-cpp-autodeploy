@@ -5,9 +5,10 @@ from pathlib import Path
 from urllib.request import urlopen
 
 SCRIPT_DIR  = Path(__file__).resolve().parent
-LOCAL_BIN   = SCRIPT_DIR / "bin"
-BUILD_ROOT  = SCRIPT_DIR / "llama-builds"
-CURRENT_DIR = SCRIPT_DIR / "llama-current"
+RUNTIME_ROOT= Path(os.environ.get("LLAMA_RUNTIME_ROOT", Path.home() / "llama-runtime")).expanduser()
+LOCAL_BIN   = Path(os.environ.get("LLAMA_BIN_DIR", RUNTIME_ROOT / "bin")).expanduser()
+BUILD_ROOT  = Path(os.environ.get("LLAMA_BUILD_ROOT", RUNTIME_ROOT / "llama-builds")).expanduser()
+CURRENT_DIR = Path(os.environ.get("LLAMA_CURRENT_DIR", RUNTIME_ROOT / "llama-current")).expanduser()
 LOG_FILE    = SCRIPT_DIR / "autodevops.log"
 VERSION_FILE= SCRIPT_DIR / ".llama-version"
 
@@ -293,13 +294,13 @@ def patch_cuda_iterators(build_path: Path) -> None:
         log(f"Warning: failed to patch {target}: {exc}")
 
 def link_outputs(build_path: Path):
-    # Update ./llama-current symlink
+    # Update the runtime llama-current symlink.
     if CURRENT_DIR.is_symlink() or CURRENT_DIR.exists():
         CURRENT_DIR.unlink() if CURRENT_DIR.is_symlink() else shutil.rmtree(CURRENT_DIR)
     CURRENT_DIR.symlink_to(build_path)
 
-    # Symlink binaries into ./bin/
-    LOCAL_BIN.mkdir(exist_ok=True)
+    # Symlink binaries into the runtime bin directory.
+    LOCAL_BIN.mkdir(parents=True, exist_ok=True)
     for f in (build_path/"build"/"bin").glob("*"):
         if f.is_file():
             dest = LOCAL_BIN / f.name
@@ -421,7 +422,7 @@ def build_llama(version: str, force_mmq: str, fast_math: bool, blas_mode: str, e
 
     link_outputs(build_path)
     VERSION_FILE.write_text(version)
-    log("Build files linked under ./llama-current and ./bin/*")
+    log(f"Build files linked under {CURRENT_DIR} and {LOCAL_BIN}/*")
 
 def test_build() -> bool:
     server = CURRENT_DIR/"build"/"bin"/"llama-server"

@@ -3,6 +3,7 @@
 
 # Build artifacts and downloads
 bin/
+run/
 models/
 llama-builds/
 llama-current/
@@ -32,8 +33,5 @@ __pycache__/
 
 # Allow keeping placeholder files
 !bin/.gitkeep
-!models/.gitignore
-!llama-builds/.gitignore
-!llama-current/.gitignore
 venv/
 .venv/

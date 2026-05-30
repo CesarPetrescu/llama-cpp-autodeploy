@@ -49,8 +49,9 @@ except Exception:
     HF_OK = False
 
 ROOT = Path(__file__).resolve().parent
-MODELS_DIR = ROOT / "models"
-LLAMA_SERVER = ROOT / "bin" / "llama-server"
+RUNTIME_ROOT = Path(os.environ.get("LLAMA_RUNTIME_ROOT", Path.home() / "llama-runtime")).expanduser()
+MODELS_DIR = Path(os.environ.get("LLAMA_MODELS_DIR", RUNTIME_ROOT / "models")).expanduser()
+LLAMA_SERVER = Path(os.environ.get("LLAMA_SERVER_BIN", RUNTIME_ROOT / "bin" / "llama-server")).expanduser()
 SPEC_TYPE_NONE = "none"
 SPEC_TYPE_DRAFT_MTP = "draft-mtp"
 SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT = "default"
@@ -1100,7 +1101,7 @@ For --rerank:
     # Common
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=45540)
-    p.add_argument("--path", default=str(MODELS_DIR), help="GGUF download dir (default: ./models)")
+    p.add_argument("--path", default=str(MODELS_DIR), help=f"GGUF download dir (default: {MODELS_DIR})")
     p.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"), help="Hugging Face token (if needed)")
     p.add_argument("--extra", nargs=argparse.REMAINDER, help="Extra llama-server flags after --extra ...")
 

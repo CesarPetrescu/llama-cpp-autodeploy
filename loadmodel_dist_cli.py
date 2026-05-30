@@ -39,10 +39,11 @@ from validators import split_extra_flags as validate_split_extra_flags
 from validators import validate_int, validate_path, validate_port
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-BIN_DIR = SCRIPT_DIR / "bin"
+RUNTIME_ROOT = Path(os.environ.get("LLAMA_RUNTIME_ROOT", Path.home() / "llama-runtime")).expanduser()
+BIN_DIR = Path(os.environ.get("LLAMA_BIN_DIR", RUNTIME_ROOT / "bin")).expanduser()
 LLAMA_CLI = BIN_DIR / "llama-cli"
 RPC_SERVER = BIN_DIR / "rpc-server"
-MODELS_DIR = SCRIPT_DIR / "models"
+MODELS_DIR = Path(os.environ.get("LLAMA_MODELS_DIR", RUNTIME_ROOT / "models")).expanduser()
 DEFAULT_RPC_PORT = "5515"
 CONFIG_PATH = SCRIPT_DIR / ".loadmodel_dist_cli.json"
 
