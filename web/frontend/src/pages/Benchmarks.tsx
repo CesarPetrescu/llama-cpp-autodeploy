@@ -192,8 +192,8 @@ export default function Benchmarks() {
     null;
   const runningCount = benchmarkList.filter((item) => item.status === "running").length;
   const latestBenchmark = benchmarkList[0] ?? null;
-  const fastestOverall = benchmarkList
-    .map((item) => item.summary?.best_overall?.avg_ts ?? null)
+  const fastestPrompt = benchmarkList
+    .map((item) => item.summary?.best_pp?.avg_ts ?? null)
     .filter((value): value is number => value != null)
     .sort((a, b) => b - a)[0] ?? null;
   const fastestGeneration = benchmarkList
@@ -334,13 +334,13 @@ export default function Benchmarks() {
           tone={fastestGeneration ? "success" : "default"}
         />
         <MetricCard
-          label="Best overall"
-          value={formatTs(fastestOverall)}
+          label="Best pp"
+          value={formatTs(fastestPrompt)}
           meta={[
-            latestBenchmark?.summary?.best_overall?.test ?? "no result",
-            latestBenchmark?.summary?.model_type ?? "—",
+            latestBenchmark?.summary?.best_pp?.test ?? "no pp result",
+            latestBenchmark?.summary?.backend ?? "—",
           ]}
-          tone={fastestOverall ? "success" : "default"}
+          tone={fastestPrompt ? "success" : "default"}
         />
       </div>
 
@@ -605,11 +605,9 @@ export default function Benchmarks() {
                 </div>
               </div>
 
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <MetricMini label="best overall" value={formatTs(selectedBenchmark.summary?.best_overall?.avg_ts)} meta={selectedBenchmark.summary?.best_overall?.test ?? "—"} />
+              <div className="grid gap-3 md:grid-cols-2">
                 <MetricMini label="best pp" value={formatTs(selectedBenchmark.summary?.best_pp?.avg_ts)} meta={selectedBenchmark.summary?.best_pp?.test ?? "—"} />
                 <MetricMini label="best tg" value={formatTs(selectedBenchmark.summary?.best_tg?.avg_ts)} meta={selectedBenchmark.summary?.best_tg?.test ?? "—"} />
-                <MetricMini label="best pg" value={formatTs(selectedBenchmark.summary?.best_pg?.avg_ts)} meta={selectedBenchmark.summary?.best_pg?.test ?? "—"} />
               </div>
 
               <div className="brand-table-wrap">

@@ -190,6 +190,17 @@ export interface LocalModel {
   quant: string | null;
 }
 
+export interface BinaryCaps {
+  ubatch_primary: string | null;
+  ubatch_secondary: string | null;
+  has_cpu_moe: boolean;
+  has_n_cpu_moe: boolean;
+  has_flash_attn: boolean;
+  has_spec_type: boolean;
+  has_draft_mtp: boolean;
+  spec_draft_flags: string[];
+}
+
 export interface SupportedFlags {
   bool_flags: string[];
   choice_flags: Record<string, string[]>;
@@ -247,6 +258,32 @@ export interface InstanceConfig {
   jinja: boolean;
   reasoning_format?: string | null;
   no_context_shift: boolean;
+  spec_type?: "none" | "draft-mtp" | null;
+  spec_draft_model?: string | null;
+  spec_draft_n_max?: number | null;
+  spec_draft_n_min?: number | null;
+  spec_draft_p_split?: number | null;
+  spec_draft_p_min?: number | null;
+  spec_draft_backend_sampling?: "default" | "on" | "off" | null;
+  spec_draft_hf?: string | null;
+  spec_draft_ngl?: string | null;
+  spec_draft_device?: string | null;
+  spec_draft_type_k?: string | null;
+  spec_draft_type_v?: string | null;
+  spec_draft_override_tensor?: string | null;
+  spec_draft_cpu_moe?: boolean;
+  spec_draft_n_cpu_moe?: number | null;
+  spec_draft_threads?: number | null;
+  spec_draft_threads_batch?: number | null;
+  spec_draft_cpu_mask?: string | null;
+  spec_draft_cpu_range?: string | null;
+  spec_draft_cpu_strict?: number | null;
+  spec_draft_prio?: number | null;
+  spec_draft_poll?: number | null;
+  spec_draft_cpu_mask_batch?: string | null;
+  spec_draft_cpu_strict_batch?: number | null;
+  spec_draft_prio_batch?: number | null;
+  spec_draft_poll_batch?: number | null;
   extra_flags: string;
 }
 
@@ -351,6 +388,7 @@ export const api = {
     }),
   listLocal: () =>
     apiFetch<{ models_dir: string; models: LocalModel[] }>("/api/models/local"),
+  binaryCaps: () => apiFetch<BinaryCaps>("/api/models/binary-caps"),
   downloadModel: (spec: string, hf_token?: string) =>
     apiFetch<{ model: LocalModel }>("/api/models/download", {
       method: "POST",

@@ -285,6 +285,71 @@ For MoE-capable `llama-server` builds, `loadmodel.py` also accepts:
 If the local `llama-server` binary does not expose these flags,
 `loadmodel.py` exits with a rebuild hint.
 
+For recent `llama.cpp` builds with MTP support, both the web Instances page and
+the terminal launchers expose structured speculative decoding fields. The
+minimal launch form is:
+
+```bash
+python loadmodel.py --llm ./models/Qwen3.6-35B-A3B-UD-IQ1_M.gguf \
+  --spec-type draft-mtp
+```
+
+When the draft/MTP GGUF is a separate file, provide it explicitly:
+
+```bash
+python loadmodel.py --llm ./models/main.gguf \
+  --spec-type draft-mtp \
+  --spec-draft-model ./models/mtp.gguf
+```
+
+Or let `llama.cpp` resolve the draft model from Hugging Face directly:
+
+```bash
+python loadmodel.py --llm ./models/main.gguf \
+  --spec-type draft-mtp \
+  --spec-draft-hf unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-IQ1_M
+```
+
+The app deliberately does not guess or download a sibling MTP file. Use the
+Library page, `--spec-draft-model <path-or-hf-spec>`, or
+`--spec-draft-hf <repo[:quant]>` to point at the draft GGUF you want. Common
+tuning fields such as `--spec-draft-n-max`,
+`--spec-draft-p-min`, `--spec-draft-ngl`, draft KV cache types, draft CPU/MoE
+placement, and draft thread affinity are exposed directly. Leaving them blank
+preserves the upstream `llama.cpp` defaults.
+
+MTP is guarded against unsupported launches: it is only accepted for LLM mode,
+cannot be combined with `--mmproj`, and refuses duplicate speculative flags in
+`--extra`.
+
+Validated MTP smoke test, 2026-05-30:
+
+```bash
+./bin/llama-server \
+  --model models/Qwen3.6-35B-A3B-UD-IQ1_M.gguf \
+  --host 127.0.0.1 --port 45650 \
+  --ctx-size 1024 --parallel 1 \
+  --n-gpu-layers 999 \
+  --spec-type draft-mtp \
+  --spec-draft-n-max 2 \
+  --flash-attn on
+```
+
+The test used `llama.cpp` commit `764f1e6` and
+`unsloth/Qwen3.6-35B-A3B-MTP-GGUF` file
+`Qwen3.6-35B-A3B-UD-IQ1_M.gguf` downloaded to `models/`. The verified file
+size was `11366414624` bytes and SHA256 was
+`223db8b347ebe3d75f43a0fd998eb86148c9744635066c6782662208ddc14867`.
+Successful startup logs included `adding speculative implementation
+'draft-mtp'` and `speculative decoding context initialized`; `/health`
+returned `{"status":"ok"}`, and a small `/completion` request reported draft
+timings with `draft_n=6` and `draft_n_accepted=3`.
+
+If a resumed Hugging Face download has the same size but fails GGUF parsing with
+`GGML_ASSERT(!key.empty())`, delete the partial artifact and force a clean
+download. A clean file must match the SHA256 above before using it for runtime
+tests.
+
 ### Distributed inference (RPC)
 
 Interactive distributed launcher:

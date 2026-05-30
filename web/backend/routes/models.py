@@ -89,6 +89,37 @@ def _gguf_metadata(path: Path) -> Dict[str, Any]:
     }
 
 
+_SPEC_DRAFT_FLAGS = [
+    "--spec-type",
+    "--spec-draft-model",
+    "--spec-draft-hf",
+    "--spec-draft-n-max",
+    "--spec-draft-n-min",
+    "--spec-draft-p-split",
+    "--spec-draft-p-min",
+    "--spec-draft-backend-sampling",
+    "--no-spec-draft-backend-sampling",
+    "--spec-draft-ngl",
+    "--spec-draft-device",
+    "--spec-draft-type-k",
+    "--spec-draft-type-v",
+    "--spec-draft-override-tensor",
+    "--spec-draft-cpu-moe",
+    "--spec-draft-n-cpu-moe",
+    "--spec-draft-threads",
+    "--spec-draft-threads-batch",
+    "--spec-draft-cpu-mask",
+    "--spec-draft-cpu-range",
+    "--spec-draft-cpu-strict",
+    "--spec-draft-prio",
+    "--spec-draft-poll",
+    "--spec-draft-cpu-mask-batch",
+    "--spec-draft-cpu-strict-batch",
+    "--spec-draft-prio-batch",
+    "--spec-draft-poll-batch",
+]
+
+
 @router.get("/local")
 async def list_local(request: Request) -> Dict[str, Any]:
     models_dir = _resolve_models_dir(request)
@@ -167,6 +198,9 @@ async def binary_caps() -> Dict[str, Any]:
         "has_cpu_moe": "--cpu-moe" in help_out,
         "has_n_cpu_moe": "--n-cpu-moe" in help_out,
         "has_flash_attn": "--flash-attn" in help_out,
+        "has_spec_type": "--spec-type" in help_out,
+        "has_draft_mtp": "draft-mtp" in help_out,
+        "spec_draft_flags": [flag for flag in _SPEC_DRAFT_FLAGS if flag in help_out],
     }
 
 

@@ -51,6 +51,28 @@ except Exception:
 ROOT = Path(__file__).resolve().parent
 MODELS_DIR = ROOT / "models"
 LLAMA_SERVER = ROOT / "bin" / "llama-server"
+SPEC_TYPE_NONE = "none"
+SPEC_TYPE_DRAFT_MTP = "draft-mtp"
+SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT = "default"
+SPECULATIVE_MANAGED_EXTRA_FLAGS = {
+    "--spec-type", "--spec-draft-model", "-md", "--model-draft",
+    "--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft",
+    "--spec-draft-n-max", "--spec-draft-n-min", "--spec-draft-p-split", "--draft-p-split",
+    "--spec-draft-p-min", "--draft-p-min", "--spec-draft-backend-sampling",
+    "--no-spec-draft-backend-sampling", "--spec-draft-ngl", "-ngld",
+    "--gpu-layers-draft", "--n-gpu-layers-draft", "--spec-draft-device", "-devd",
+    "--device-draft", "--spec-draft-type-k", "-ctkd", "--cache-type-k-draft",
+    "--spec-draft-type-v", "-ctvd", "--cache-type-v-draft", "--spec-draft-override-tensor",
+    "-otd", "--override-tensor-draft", "--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft",
+    "--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft",
+    "--spec-draft-threads", "-td", "--threads-draft", "--spec-draft-threads-batch",
+    "-tbd", "--threads-batch-draft", "--spec-draft-cpu-mask", "-Cd", "--cpu-mask-draft",
+    "--spec-draft-cpu-range", "-Crd", "--cpu-range-draft", "--spec-draft-cpu-strict",
+    "--cpu-strict-draft", "--spec-draft-prio", "--prio-draft", "--spec-draft-poll",
+    "--poll-draft", "--spec-draft-cpu-mask-batch", "-Cbd", "--cpu-mask-batch-draft",
+    "--spec-draft-cpu-strict-batch", "--cpu-strict-batch-draft", "--spec-draft-prio-batch",
+    "--prio-batch-draft", "--spec-draft-poll-batch", "--poll-batch-draft",
+}
 
 # --------------------------- Utilities ---------------------------
 
@@ -117,6 +139,32 @@ def ensure_moe_flags_available(want_moe: bool) -> None:
             "This llama-server build does not recognize --cpu-moe/--n-cpu-moe. "
             "Rebuild llama.cpp with a recent commit (e.g., `python autodevops.py --ref latest --now`)."
         )
+
+
+def ensure_mtp_flags_available(want_mtp: bool) -> None:
+    """Fail fast if the llama-server build is too old to understand MTP speculative decoding."""
+    if not want_mtp:
+        return
+    if not LLAMA_SERVER.exists():
+        die(
+            "llama-server not found. Rebuild llama.cpp (e.g., `python autodevops.py --ref latest --now`) "
+            "before enabling MTP speculative decoding."
+        )
+
+    try:
+        help_out = run_capture([str(LLAMA_SERVER), "--help"])
+    except Exception as e:
+        die(
+            "Failed to inspect llama-server for MTP support via `--help`. "
+            "Ensure llama-server is executable and rebuilt if necessary. "
+            f"Details: {e}"
+        )
+    if "--spec-type" not in help_out or SPEC_TYPE_DRAFT_MTP not in help_out:
+        die(
+            "This llama-server build does not recognize --spec-type draft-mtp. "
+            "Rebuild llama.cpp with a recent upstream commit (e.g., `python autodevops.py --ref latest --now`)."
+        )
+
 
 def parse_ollama_ref(spec: str) -> Tuple[str, Optional[str]]:
     # org/repo[:quant_or_filename]
@@ -238,6 +286,98 @@ def parse_max_memory_arg(s: Optional[str]) -> Optional[dict]:
 
 def shell_join(cmd: List[str]) -> str:
     return " ".join(shlex.quote(str(x)) for x in cmd)
+
+
+def _optional_text(value) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _append_value_flag(cmd: List[str], flag: str, value) -> None:
+    text = _optional_text(value)
+    if text:
+        cmd += [flag, text]
+
+
+def _append_int_flag(cmd: List[str], flag: str, value) -> None:
+    if value is not None:
+        cmd += [flag, str(int(value))]
+
+
+def _append_float_flag(cmd: List[str], flag: str, value) -> None:
+    if value is not None:
+        cmd += [flag, str(float(value))]
+
+
+def _spec_mtp_enabled(args) -> bool:
+    return str(getattr(args, "spec_type", SPEC_TYPE_NONE) or SPEC_TYPE_NONE).strip().lower() == SPEC_TYPE_DRAFT_MTP
+
+
+def _flag_name(token: str) -> str:
+    return str(token).split("=", 1)[0]
+
+
+def validate_speculative_extra(args) -> None:
+    if not _spec_mtp_enabled(args):
+        return
+    extra = args.extra or []
+    for token in extra:
+        flag = _flag_name(token)
+        if flag in SPECULATIVE_MANAGED_EXTRA_FLAGS:
+            die(f"{flag} is managed by the structured MTP arguments. Remove it from --extra.")
+
+
+def build_speculative_extra(args, models_dir: Path, hf_token: Optional[str]) -> List[str]:
+    if not _spec_mtp_enabled(args):
+        return []
+
+    if _optional_text(getattr(args, "spec_draft_model", None)) and _optional_text(getattr(args, "spec_draft_hf", None)):
+        die("Use either --spec-draft-model or --spec-draft-hf, not both.")
+
+    extra: List[str] = ["--spec-type", SPEC_TYPE_DRAFT_MTP]
+    draft_model = _optional_text(getattr(args, "spec_draft_model", None))
+    if draft_model:
+        draft_path = resolve_gguf(draft_model, models_dir, hf_token)
+        extra += ["--spec-draft-model", str(draft_path)]
+    _append_value_flag(extra, "--spec-draft-hf", getattr(args, "spec_draft_hf", None))
+    _append_int_flag(extra, "--spec-draft-n-max", getattr(args, "spec_draft_n_max", None))
+    _append_int_flag(extra, "--spec-draft-n-min", getattr(args, "spec_draft_n_min", None))
+    _append_float_flag(extra, "--spec-draft-p-split", getattr(args, "spec_draft_p_split", None))
+    _append_float_flag(extra, "--spec-draft-p-min", getattr(args, "spec_draft_p_min", None))
+    _append_value_flag(extra, "--spec-draft-ngl", getattr(args, "spec_draft_ngl", None))
+    _append_value_flag(extra, "--spec-draft-device", getattr(args, "spec_draft_device", None))
+    _append_value_flag(extra, "--spec-draft-type-k", getattr(args, "spec_draft_type_k", None))
+    _append_value_flag(extra, "--spec-draft-type-v", getattr(args, "spec_draft_type_v", None))
+    _append_value_flag(extra, "--spec-draft-override-tensor", getattr(args, "spec_draft_override_tensor", None))
+
+    backend_sampling = str(
+        getattr(args, "spec_draft_backend_sampling", SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT)
+        or SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT
+    ).strip().lower()
+    if backend_sampling == "on":
+        extra.append("--spec-draft-backend-sampling")
+    elif backend_sampling == "off":
+        extra.append("--no-spec-draft-backend-sampling")
+
+    if getattr(args, "spec_draft_cpu_moe", False):
+        extra.append("--spec-draft-cpu-moe")
+    else:
+        _append_int_flag(extra, "--spec-draft-n-cpu-moe", getattr(args, "spec_draft_n_cpu_moe", None))
+
+    _append_int_flag(extra, "--spec-draft-threads", getattr(args, "spec_draft_threads", None))
+    _append_int_flag(extra, "--spec-draft-threads-batch", getattr(args, "spec_draft_threads_batch", None))
+    _append_value_flag(extra, "--spec-draft-cpu-mask", getattr(args, "spec_draft_cpu_mask", None))
+    _append_value_flag(extra, "--spec-draft-cpu-range", getattr(args, "spec_draft_cpu_range", None))
+    _append_int_flag(extra, "--spec-draft-cpu-strict", getattr(args, "spec_draft_cpu_strict", None))
+    _append_int_flag(extra, "--spec-draft-prio", getattr(args, "spec_draft_prio", None))
+    _append_int_flag(extra, "--spec-draft-poll", getattr(args, "spec_draft_poll", None))
+    _append_value_flag(extra, "--spec-draft-cpu-mask-batch", getattr(args, "spec_draft_cpu_mask_batch", None))
+    _append_int_flag(extra, "--spec-draft-cpu-strict-batch", getattr(args, "spec_draft_cpu_strict_batch", None))
+    _append_int_flag(extra, "--spec-draft-prio-batch", getattr(args, "spec_draft_prio_batch", None))
+    _append_int_flag(extra, "--spec-draft-poll-batch", getattr(args, "spec_draft_poll_batch", None))
+    return extra
 
 # --------------------------- GGUF: LLM / Embeddings ---------------------------
 
@@ -976,6 +1116,34 @@ For --rerank:
     p.add_argument("--reasoning-format", default=None, help="deepseek|none|qwen3 (how server handles <think> tags)")
     p.add_argument("--no-context-shift", action="store_true", help="Disable context shift (recommended for thinking models)")
 
+    # llama-server speculative / MTP runtime
+    p.add_argument("--spec-type", choices=[SPEC_TYPE_NONE, SPEC_TYPE_DRAFT_MTP], default=SPEC_TYPE_NONE, help="Structured speculative decoding mode")
+    p.add_argument("--spec-draft-model", default=None, help="Local GGUF path or HF spec for the MTP draft model/head")
+    p.add_argument("--spec-draft-hf", default=None, help="HF repo[:quant] for llama.cpp to fetch the MTP draft model")
+    p.add_argument("--spec-draft-n-max", type=int, default=None)
+    p.add_argument("--spec-draft-n-min", type=int, default=None)
+    p.add_argument("--spec-draft-p-split", type=float, default=None)
+    p.add_argument("--spec-draft-p-min", type=float, default=None)
+    p.add_argument("--spec-draft-backend-sampling", choices=[SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT, "on", "off"], default=SPEC_DRAFT_BACKEND_SAMPLING_DEFAULT)
+    p.add_argument("--spec-draft-ngl", default=None, help="Draft GPU layers: exact number, auto, or all")
+    p.add_argument("--spec-draft-device", default=None, help="Comma-separated draft devices")
+    p.add_argument("--spec-draft-type-k", default=None)
+    p.add_argument("--spec-draft-type-v", default=None)
+    p.add_argument("--spec-draft-override-tensor", default=None)
+    p.add_argument("--spec-draft-cpu-moe", action="store_true")
+    p.add_argument("--spec-draft-n-cpu-moe", type=int, default=None)
+    p.add_argument("--spec-draft-threads", type=int, default=None)
+    p.add_argument("--spec-draft-threads-batch", type=int, default=None)
+    p.add_argument("--spec-draft-cpu-mask", default=None)
+    p.add_argument("--spec-draft-cpu-range", default=None)
+    p.add_argument("--spec-draft-cpu-strict", type=int, choices=[0, 1], default=None)
+    p.add_argument("--spec-draft-prio", type=int, choices=[0, 1, 2, 3], default=None)
+    p.add_argument("--spec-draft-poll", type=int, default=None)
+    p.add_argument("--spec-draft-cpu-mask-batch", default=None)
+    p.add_argument("--spec-draft-cpu-strict-batch", type=int, choices=[0, 1], default=None)
+    p.add_argument("--spec-draft-prio-batch", type=int, choices=[0, 1, 2, 3], default=None)
+    p.add_argument("--spec-draft-poll-batch", type=int, default=None)
+
     # Transformers reranker runtime
     p.add_argument("--device", default=None, help="cuda|cpu (single device only if device_map!=auto)")
     p.add_argument("--device-map", default="auto", help="auto|cuda|cpu")
@@ -1006,6 +1174,13 @@ For --rerank:
             instruction=args.instruction,
         )
         return
+
+    if (args.embed or args.rerank) and _spec_mtp_enabled(args):
+        die("MTP speculative decoding is only supported for --llm.")
+    if _spec_mtp_enabled(args) and args.mmproj:
+        die("MTP speculative decoding is not supported with --mmproj yet.")
+    validate_speculative_extra(args)
+    ensure_mtp_flags_available(_spec_mtp_enabled(args))
 
     if args.rerank:
         gguf_path = resolve_gguf(args.model, Path(args.path), args.hf_token)
@@ -1039,10 +1214,11 @@ For --rerank:
         return
 
     # GGUF path resolve
-    gguf_path = resolve_gguf(args.model, Path(args.path), args.hf_token)
+    models_dir = Path(args.path)
+    gguf_path = resolve_gguf(args.model, models_dir, args.hf_token)
 
     # llama-server (LLM or Embeddings)
-    extra = args.extra or []
+    extra = build_speculative_extra(args, models_dir, args.hf_token) + (args.extra or [])
     if args.embed:
         extra = ["--embeddings"] + extra
     if "--flash-attn" not in extra and "-fa" not in extra:
